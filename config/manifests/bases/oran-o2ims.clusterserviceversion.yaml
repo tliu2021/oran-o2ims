@@ -61,6 +61,11 @@ spec:
         path: name
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
+      - description: Release defines the openshift release version of the template
+        displayName: Release
+        path: release
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
       - description: TemplateId defines a Identifier for the O-Cloud Template. This
           identifier is allocated by the O-Cloud.
         displayName: TemplateId
@@ -91,6 +96,42 @@ spec:
       - displayName: Conditions
         path: conditions
       version: v1alpha1
+    - description: HardwareTemplate is the Schema for the hardwaretemplates API
+      displayName: ORAN O2IMS Hardware Template
+      kind: HardwareTemplate
+      name: hardwaretemplates.o2ims-hardwaremanagement.oran.openshift.io
+      resources:
+      - kind: ConfigMap
+        name: ""
+        version: v1
+      specDescriptors:
+      - description: BootInterfaceLabel is the label of the boot interface.
+        displayName: Boot Interface Label
+        path: bootInterfaceLabel
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: Extensions holds additional custom key-value pairs that can be
+          used to extend the node pool's configuration.
+        displayName: Extensions
+        path: extensions
+      - description: HardwareProvisioningTimeout defines the timeout duration string
+          for the hardware provisioning.
+        displayName: Hardware Provisioning Timeout
+        path: hardwareProvisioningTimeout
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: HwMgrId is the identifier for the hardware manager plugin adaptor.
+        displayName: Hardware Manager ID
+        path: hwMgrId
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: NodePoolData defines a collection of NodePoolData items
+        displayName: Node Pool Data
+        path: nodePoolData
+      statusDescriptors:
+      - displayName: Conditions
+        path: conditions
+      version: v1alpha1
     - description: Inventory is the Schema for the Inventory API
       displayName: ORAN O2IMS Inventory
       kind: Inventory
@@ -100,10 +141,9 @@ spec:
         name: ""
         version: apps/v1
       specDescriptors:
-      - description: AlarmSubscriptionServerConfig contains the configuration for
-          the alarm server.
-        displayName: Alarm Subscription Server Configuration
-        path: alarmSubscriptionServerConfig
+      - description: AlarmServerConfig contains the configuration for the alarm server.
+        displayName: Alarm Server Configuration
+        path: alarmServerConfig
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       - description: |-
@@ -114,10 +154,10 @@ spec:
         path: caBundleName
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
-      - description: CloudId is used to correlate the SMO inventory record with the
-          deployed cloud instance.
-        displayName: Cloud Id
-        path: cloudId
+      - description: CloudID is the global cloud ID value used to correlate the SMO
+          inventory record with the deployed cloud instance.
+        displayName: Cloud ID
+        path: cloudID
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       - displayName: Deployment Manager Server Configuration
@@ -203,25 +243,47 @@ spec:
         path: smo.registrationEndpoint
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
+      - description: TlsConfig defines the TLS attributes specific to the SMO and
+          OAuth servers
+        displayName: TLS Configuration
+        path: smo.tls
+      - description: |-
+          ClientCertificateName represents the name of a secret (in the current namespace) which contains an X.509
+          certificate and private key to be used when initiating connections to the SMO and OAuth servers.  The secret is
+          expected to contain a 'tls.key' and 'tls.crt' keys.  If the client is signed by intermediate CA certificate(s)
+          then it is expected that the full chain is to be appended to the certificate file with the device certificate
+          being first and the root CA being last.
+        displayName: TLS client certificate
+        path: smo.tls.clientCertificateName
       - description: Url represents the base URL of the SMO instance
         displayName: SMO URL
         path: smo.url
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       statusDescriptors:
+      - description: Stores the local cluster ID used as the local Cloud ID value.
+        displayName: Local Cluster ID
+        path: clusterID
       - description: |-
           INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
           Important: Run "make" to regenerate code after modifying this file
-        displayName: Deployments Status
+        displayName: Conditions
+        path: conditions
+      - displayName: Deployments Status
         path: deploymentStatus
-      - displayName: Conditions
-        path: deploymentStatus.conditions
+      - displayName: Alarm Server Status
+        path: deploymentStatus.alarmServerStatus
       - displayName: Deployment Server Status
         path: deploymentStatus.deploymentServerStatus
       - displayName: Metadata Server Status
         path: deploymentStatus.metadataServerStatus
       - displayName: Resource Server Status
         path: deploymentStatus.resourceServerStatus
+      - description: |-
+          Stores the ingress host domain resolved at runtime; either from a user override or automatically computed from
+          the default ingress controller.
+        displayName: Resolved Ingress Host Address
+        path: ingressHost
       - displayName: Deployments Status
         path: usedServerConfig
       version: v1alpha1
@@ -242,7 +304,9 @@ spec:
         path: cloudID
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
-      - description: HwMgrId is the identifier for the hardware manager plugin adaptor.
+      - displayName: Extensions
+        path: extensions
+      - description: HwMgrId is the identifier for the hardware manager plugin instance.
         displayName: Hardware Manager ID
         path: hwMgrId
         x-descriptors:
@@ -260,11 +324,8 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       statusDescriptors:
-      - displayName: Cloud Manager
-        path: cloudManager
-      - description: |-
-          Conditions represent the observations of the NodePool's current state.
-          Possible values of the condition type are `Provisioned` and `Unknown`.
+      - description: Conditions represent the latest available observations of an
+          NodePool's state.
         displayName: Conditions
         path: conditions
       - displayName: Hw Mgr Plugin
@@ -282,9 +343,21 @@ spec:
         name: ""
         version: v1
       specDescriptors:
+      - displayName: Extensions
+        path: extensions
       - description: GroupName
         displayName: Group Name
         path: groupName
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: HwMgrId is the identifier for the hardware manager instance.
+        displayName: Hardware Manager ID
+        path: hwMgrId
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: HwMgrNodeId is the node identifier from the hardware manager.
+        displayName: Hardware Manager Node ID
+        path: hwMgrNodeId
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       - description: HwProfile
@@ -307,6 +380,8 @@ spec:
         path: conditions
       - displayName: Hostname
         path: hostname
+      - displayName: Hw Profile
+        path: hwProfile
       - displayName: Interfaces
         path: interfaces
       version: v1alpha1
@@ -362,18 +437,8 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       statusDescriptors:
-      - description: ClusterDetails references to the ClusterInstance.
-        displayName: Cluster Details
-        path: clusterDetails
       - displayName: Conditions
         path: conditions
-      - description: NodePoolRef references to the NodePool.
-        displayName: Node Pool Ref
-        path: nodePoolRef
-      - description: Holds policies that are matched with the ManagedCluster created
-          by the ProvisioningRequest.
-        displayName: Policies
-        path: policies
       version: v1alpha1
   description: |
     # O-RAN O2IMS operator

@@ -19,11 +19,14 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	openshiftv1 "github.com/openshift/api/config/v1"
+	openshiftoperatorv1 "github.com/openshift/api/operator/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -41,10 +44,7 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
-const (
-	ServerTestImage        = "controller-manager:test"
-	KubeRbacProxyTestImage = "kube-rbac-proxy:test"
-)
+var ServerTestImage = "controller-manager:test"
 
 var _ = DescribeTable(
 	"Reconciler",
@@ -56,8 +56,44 @@ var _ = DescribeTable(
 			},
 		}
 
+		ingress := &openshiftoperatorv1.IngressController{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "default",
+				Namespace: "openshift-ingress-operator"},
+			Spec: openshiftoperatorv1.IngressControllerSpec{
+				Domain: "apps.example.com"}}
+
+		search := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "search-search-api",
+				Namespace: "open-cluster-management",
+				Labels:    map[string]string{utils.SearchApiLabelKey: utils.SearchApiLabelValue},
+			},
+			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeClusterIP,
+				Ports: []corev1.ServicePort{
+					{
+						Port: 4010,
+						Name: "search-api",
+					},
+				},
+			},
+		}
+
+		cv := &openshiftv1.ClusterVersion{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "version",
+			},
+		}
+
+		// Set up necessary env variables
+		err := os.Setenv(utils.KubeRbacProxyImageName, "kube-rbac-proxy:test")
+		Expect(err).NotTo(HaveOccurred())
+		err = os.Setenv(utils.PostgresImageName, "postgres:test")
+		Expect(err).NotTo(HaveOccurred())
+
 		// Update the testcase objects to include the Namespace.
-		objs = append(objs, ns)
+		objs = append(objs, ns, ingress, search, cv)
 
 		// Get the fake client.
 		fakeClient := getFakeClientFromObjects(objs...)
@@ -84,8 +120,7 @@ var _ = DescribeTable(
 					CreationTimestamp: metav1.Now(),
 				},
 				Spec: inventoryv1alpha1.InventorySpec{
-					Image:              ServerTestImage,
-					KubeRbacProxyImage: KubeRbacProxyTestImage,
+					Image: &ServerTestImage,
 					MetadataServerConfig: inventoryv1alpha1.MetadataServerConfig{
 						ServerConfig: inventoryv1alpha1.ServerConfig{
 							Enabled: true,
@@ -158,8 +193,7 @@ var _ = DescribeTable(
 					CreationTimestamp: metav1.Now(),
 				},
 				Spec: inventoryv1alpha1.InventorySpec{
-					Image:              ServerTestImage,
-					KubeRbacProxyImage: KubeRbacProxyTestImage,
+					Image: &ServerTestImage,
 					MetadataServerConfig: inventoryv1alpha1.MetadataServerConfig{
 						ServerConfig: inventoryv1alpha1.ServerConfig{
 							Enabled: true,
@@ -249,8 +283,7 @@ var _ = DescribeTable(
 					CreationTimestamp: metav1.Now(),
 				},
 				Spec: inventoryv1alpha1.InventorySpec{
-					Image:              ServerTestImage,
-					KubeRbacProxyImage: KubeRbacProxyTestImage,
+					Image: &ServerTestImage,
 					MetadataServerConfig: inventoryv1alpha1.MetadataServerConfig{
 						ServerConfig: inventoryv1alpha1.ServerConfig{
 							Enabled: true,
@@ -306,8 +339,7 @@ var _ = DescribeTable(
 					CreationTimestamp: metav1.Now(),
 				},
 				Spec: inventoryv1alpha1.InventorySpec{
-					Image:              ServerTestImage,
-					KubeRbacProxyImage: KubeRbacProxyTestImage,
+					Image: &ServerTestImage,
 					MetadataServerConfig: inventoryv1alpha1.MetadataServerConfig{
 						ServerConfig: inventoryv1alpha1.ServerConfig{
 							Enabled: false,

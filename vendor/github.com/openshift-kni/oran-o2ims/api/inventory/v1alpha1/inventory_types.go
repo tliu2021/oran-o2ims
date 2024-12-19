@@ -44,6 +44,18 @@ type OAuthConfig struct {
 	Scopes []string `json:"scopes"`
 }
 
+// TlsConfig defines the TLS specific attributes specific to the SMO and OAuth servers
+type TlsConfig struct {
+	// ClientCertificateName represents the name of a secret (in the current namespace) which contains an X.509
+	// certificate and private key to be used when initiating connections to the SMO and OAuth servers.  The secret is
+	// expected to contain a 'tls.key' and 'tls.crt' keys.  If the client is signed by intermediate CA certificate(s)
+	// then it is expected that the full chain is to be appended to the certificate file with the device certificate
+	// being first and the root CA being last.
+	//+optional
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="TLS client certificate"
+	ClientCertificateName *string `json:"clientCertificateName"`
+}
+
 // SmoConfig defines the configurable attributes to represent the SMO instance
 type SmoConfig struct {
 	// Url represents the base URL of the SMO instance
@@ -56,6 +68,10 @@ type SmoConfig struct {
 	//+optional
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="SMO OAuth Configuration"
 	OAuthConfig *OAuthConfig `json:"oauth,omitempty"`
+	// TlsConfig defines the TLS attributes specific to the SMO and OAuth servers
+	//+optional
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="TLS Configuration"
+	Tls *TlsConfig `json:"tls"`
 }
 
 type ServerConfig struct {
@@ -104,8 +120,8 @@ type ResourceServerConfig struct {
 	Extensions []string `json:"extensions,omitempty"`
 }
 
-// AlarmSubscriptionServerConfig contains the configuration for the alarm subscription server.
-type AlarmSubscriptionServerConfig struct {
+// AlarmServerConfig contains the configuration for the alarm server.
+type AlarmServerConfig struct {
 	//+kubebuilder:default:={enabled:true}
 	ServerConfig `json:",inline"`
 }
@@ -117,14 +133,11 @@ type InventorySpec struct {
 	// the controller manager.
 	//+optional
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Image",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
-	Image string `json:"image"`
-
-	// KubeRbacProxyImage is the full reference of the container image that implements the kube-rbac-proxy.
+	Image *string `json:"image,omitempty"`
+	// CloudID is the global cloud ID value used to correlate the SMO inventory record with the deployed cloud instance.
 	//+optional
-	KubeRbacProxyImage string `json:"kubeRbacProxyImage"`
-	// CloudId is used to correlate the SMO inventory record with the deployed cloud instance.
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Cloud Id",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
-	CloudId string `json:"cloudId"`
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Cloud ID",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
+	CloudID *string `json:"cloudID"`
 	//+optional
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Metadata Server Configuration",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
 	MetadataServerConfig MetadataServerConfig `json:"metadataServerConfig"`
@@ -135,14 +148,14 @@ type InventorySpec struct {
 	//+optional
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Resource Server Configuration",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
 	ResourceServerConfig ResourceServerConfig `json:"resourceServerConfig,omitempty"`
-	// AlarmSubscriptionServerConfig contains the configuration for the alarm server.
+	// AlarmServerConfig contains the configuration for the alarm server.
 	//+optional
-	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Alarm Subscription Server Configuration",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
-	AlarmSubscriptionServerConfig AlarmSubscriptionServerConfig `json:"alarmSubscriptionServerConfig"`
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Alarm Server Configuration",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
+	AlarmServerConfig AlarmServerConfig `json:"alarmServerConfig"`
 	// IngressHost defines the FQDN for the IMS endpoints.
 	//+optional
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Ingress Host",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
-	IngressHost string `json:"ingressHost,omitempty"`
+	IngressHost *string `json:"ingressHost,omitempty"`
 	// SmoConfig defines the configurable attributes to represent the SMO instance
 	//+optional
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="SMO Configuration"
@@ -162,8 +175,8 @@ type DeploymentsStatus struct {
 	MetadataServerStatus string `json:"metadataServerStatus,omitempty"`
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Resource Server Status"
 	ResourceServerStatus string `json:"resourceServerStatus,omitempty"`
-	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions"
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Alarm Server Status"
+	AlarmServerStatus string `json:"alarmServerStatus,omitempty"`
 }
 
 type UsedServerConfig struct {
@@ -176,10 +189,22 @@ type UsedServerConfig struct {
 type InventoryStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions"
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Deployments Status"
 	DeploymentsStatus DeploymentsStatus `json:"deploymentStatus,omitempty"`
 	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Deployments Status"
 	UsedServerConfig UsedServerConfig `json:"usedServerConfig,omitempty"`
+	// Stores the ingress host domain resolved at runtime; either from a user override or automatically computed from
+	// the default ingress controller.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Resolved Ingress Host Address"
+	IngressHost string `json:"ingressHost,omitempty"`
+	// Stores the local cluster ID used as the local Cloud ID value.
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Local Cluster ID"
+	ClusterID string `json:"clusterID,omitempty"`
+	// Stores the Search API URL resolved at runtime; either from a user override or automatically computed from the
+	// Search API service.
+	SearchURL string `json:"searchURL,omitempty"`
 }
 
 // +kubebuilder:object:root=true

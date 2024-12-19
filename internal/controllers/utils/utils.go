@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,27 +13,25 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/template"
-	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/net"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	sprig "github.com/go-task/slim-sprig/v3"
-	diff "github.com/r3labs/diff/v3"
-	"github.com/xeipuuv/gojsonschema"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+
+	ibguv1alpha1 "github.com/openshift-kni/cluster-group-upgrades-operator/pkg/api/imagebasedgroupupgrades/v1alpha1"
 
 	inventoryv1alpha1 "github.com/openshift-kni/oran-o2ims/api/inventory/v1alpha1"
-	"github.com/openshift-kni/oran-o2ims/internal/files"
 	openshiftv1 "github.com/openshift/api/config/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "open-cluster-management.io/api/cluster/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -60,6 +57,8 @@ type OAuthClientConfig struct {
 	// The list of OAuth scopes requested by the client.  These will be dictated by what the SMO is expecting to see in
 	// the token.
 	Scopes []string
+	// The client certificate to be used when initiating connection to the server.
+	ClientCert *tls.Certificate
 }
 
 const (
@@ -86,112 +85,6 @@ func UpdateK8sCRStatus(ctx context.Context, c client.Client, object client.Objec
 	return nil
 }
 
-// DisallowUnknownFieldsInSchema updates a schema by adding "additionalProperties": false
-// to all objects/arrays that define "properties". This ensures that any unknown fields
-// not defined in the schema will be disallowed during validation.
-func DisallowUnknownFieldsInSchema(schema map[string]any) {
-	// Check if the current schema level has "properties" defined
-	if properties, hasProperties := schema["properties"]; hasProperties {
-		// If "additionalProperties" is not already set, add it with the value false
-		if _, exists := schema["additionalProperties"]; !exists {
-			schema["additionalProperties"] = false
-		}
-
-		// Recurse into each property defined under "properties"
-		if propsMap, ok := properties.(map[string]any); ok {
-			for _, propValue := range propsMap {
-				if propSchema, ok := propValue.(map[string]any); ok {
-					DisallowUnknownFieldsInSchema(propSchema)
-				}
-			}
-		}
-	}
-
-	// Recurse into each property defined under "items"
-	if items, hasItems := schema["items"]; hasItems {
-		if itemSchema, ok := items.(map[string]any); ok {
-			DisallowUnknownFieldsInSchema(itemSchema)
-		}
-	}
-
-	// Ignore other keywords that could have "properties"
-}
-
-func ValidateJsonAgainstJsonSchema(schema, input any) error {
-	schemaLoader := gojsonschema.NewGoLoader(schema)
-	inputLoader := gojsonschema.NewGoLoader(input)
-
-	result, err := gojsonschema.Validate(schemaLoader, inputLoader)
-	if err != nil {
-		oranUtilsLog.Error(err, "Error validating the input against the schema")
-		return fmt.Errorf("failed when validating the input against the schema: %w", err)
-	}
-
-	if result.Valid() {
-		return nil
-	} else {
-		var errs []string
-		for _, description := range result.Errors() {
-			errs = append(errs, description.String())
-		}
-
-		return fmt.Errorf("invalid input: %s", strings.Join(errs, "; "))
-	}
-}
-
-func GetBMCDetailsForClusterInstance(node map[string]interface{}, provisioningRequest string) (
-	string, string, string, error) {
-	// Get the BMC details.
-	bmcCredentialsDetailsInterface, bmcCredentialsDetailsExist := node["bmcCredentialsDetails"]
-
-	if !bmcCredentialsDetailsExist {
-		return "", "", "", NewInputError(
-			`\"bmcCredentialsDetails\" key expected to exist in ClusterTemplateInput 
-			of ProvisioningRequest %s, but it's missing`,
-			provisioningRequest,
-		)
-	}
-
-	bmcCredentialsDetails := bmcCredentialsDetailsInterface.(map[string]interface{})
-
-	// Get the BMC username and password.
-	username, usernameExists := bmcCredentialsDetails["username"].(string)
-	if !usernameExists {
-		return "", "", "", NewInputError(
-			`\"bmcCredentialsDetails.username\" key expected to exist in ClusterTemplateInput 
-			of ProvisioningRequest %s, but it's missing`,
-			provisioningRequest,
-		)
-	}
-
-	password, passwordExists := bmcCredentialsDetails["password"].(string)
-	if !passwordExists {
-		return "", "", "", NewInputError(
-			`\"bmcCredentialsDetails.password\" key expected to exist in ClusterTemplateInput 
-			of ProvisioningRequest %s, but it's missing`,
-			provisioningRequest,
-		)
-	}
-
-	secretName := ""
-	// Get the BMC CredentialsName.
-	bmcCredentialsNameInterface, bmcCredentialsNameExist := node["bmcCredentialsName"]
-	if !bmcCredentialsNameExist {
-		nodeHostnameInterface, nodeHostnameExists := node["hostName"]
-		if !nodeHostnameExists {
-			secretName = provisioningRequest
-		} else {
-			secretName =
-				extractBeforeDot(strings.ToLower(nodeHostnameInterface.(string))) +
-					"-bmc-secret"
-		}
-	} else {
-		secretName = bmcCredentialsNameInterface.(map[string]interface{})["name"].(string)
-	}
-
-	return username, password, secretName, nil
-}
-
 // CreateK8sCR creates/updates/patches an object.
 func CreateK8sCR(ctx context.Context, c client.Client,
 	newObject client.Object, ownerObject client.Object,
@@ -199,13 +92,12 @@ func CreateK8sCR(ctx context.Context, c client.Client,
 
 	// Get the name and namespace of the object:
 	key := client.ObjectKeyFromObject(newObject)
-	oranUtilsLog.Info("[CreateK8sCR] Resource", "name", key.Name, "namespace", key.Namespace, "kind", newObject.GetObjectKind().GroupVersionKind().Kind)
 
 	// We can set the owner reference only for objects that live in the same namespace, as cross
 	// namespace owners are forbidden. This also applies to non-namespaced objects like cluster
 	// roles or cluster role bindings; those have empty namespaces, so the equals comparison
 	// should also work.
-	if ownerObject != nil && ownerObject.GetNamespace() == key.Namespace {
+	if ownerObject != nil && (ownerObject.GetNamespace() == key.Namespace || ownerObject.GetNamespace() == "") {
 		err = controllerutil.SetControllerReference(ownerObject, newObject, c.Scheme())
 		if err != nil {
 			return fmt.Errorf("failed to set controller reference: %w", err)
@@ -244,17 +136,11 @@ func CreateK8sCR(ctx context.Context, c client.Client,
 	} else {
 		newObject.SetResourceVersion(oldObject.GetResourceVersion())
 		if operation == PATCH {
-			oranUtilsLog.Info("[CreateK8sCR] CR already present, PATCH it",
-				"name", newObject.GetName(),
-				"namespace", newObject.GetNamespace())
 			if err := c.Patch(ctx, newObject, client.MergeFrom(oldObject)); err != nil {
 				return fmt.Errorf("failed to patch object %s/%s: %w", newObject.GetNamespace(), newObject.GetName(), err)
 			}
 			return nil
 		} else if operation == UPDATE {
-			oranUtilsLog.Info("[CreateK8sCR] CR already present, UPDATE it",
-				"name", newObject.GetName(),
-				"namespace", newObject.GetNamespace())
 			if err := c.Update(ctx, newObject); err != nil {
 				return fmt.Errorf("failed to update object %s/%s: %w", newObject.GetNamespace(), newObject.GetName(), err)
 			}
@@ -270,15 +156,11 @@ func DoesK8SResourceExist(ctx context.Context, c client.Client, name, namespace 
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			oranUtilsLog.Info("[doesK8SResourceExist] Resource not found, create it. ",
-				"name", name, "namespace", namespace)
 			return false, nil
 		} else {
 			return false, fmt.Errorf("failed to check existence of resource '%s' in namespace '%s': %w", name, namespace, err)
 		}
 	} else {
-		oranUtilsLog.Info("[doesK8SResourceExist] Resource already present, return. ",
-			"name", name, "namespace", namespace)
 		return true, nil
 	}
 }
@@ -295,20 +177,29 @@ func extensionsToExtensionArgs(extensions []string) []string {
 
 // HasApiEndpoints determines whether a server exposes a set of API endpoints
 func HasApiEndpoints(serverName string) bool {
-	return serverName == InventoryMetadataServerName ||
+	return serverName == InventoryDatabaseServerName ||
+		serverName == InventoryAlarmServerName ||
+		serverName == InventoryMetadataServerName ||
 		serverName == InventoryResourceServerName ||
-		serverName == InventoryDeploymentManagerServerName ||
-		serverName == InventoryAlarmSubscriptionServerName
+		serverName == InventoryDeploymentManagerServerName
+}
+
+// HasDatabase determines whether a server owns a logical database instance
+func HasDatabase(serverName string) bool {
+	return serverName == InventoryResourceServerName ||
+		serverName == InventoryAlarmServerName
 }
 
 func GetDeploymentVolumes(serverName string) []corev1.Volume {
 	if HasApiEndpoints(serverName) {
+		tlsDefaultMode := int32(os.FileMode(0o400))
 		return []corev1.Volume{
 			{
 				Name: "tls",
 				VolumeSource: corev1.VolumeSource{
 					Secret: &corev1.SecretVolumeSource{
-						SecretName: fmt.Sprintf("%s-tls", serverName),
+						DefaultMode: &tlsDefaultMode,
+						SecretName:  fmt.Sprintf("%s-tls", serverName),
 					},
 				},
 			},
@@ -339,109 +230,125 @@ func GetBackendTokenArg(backendToken string) string {
 		return fmt.Sprintf("--backend-token=%s", backendToken)
 	}
 
-	return fmt.Sprintf("--backend-token-file=%s", defaultBackendTokenFile)
+	return fmt.Sprintf("--backend-token-file=%s", DefaultBackendTokenFile)
 }
 
-// getACMNamespace will determine the ACM namespace from the multiclusterengine object.
-//
-// multiclusterengine object sample:
-//
-//	apiVersion: multicluster.openshift.io/v1
-//	kind: MultiClusterEngine
-//	metadata:
-//	  labels:
-//	    installer.name: multiclusterhub
-//	    installer.namespace: open-cluster-management
-func getACMNamespace(ctx context.Context, c client.Client) (string, error) {
-	// Get the multiclusterengine object.
-	multiClusterEngine := &unstructured.Unstructured{}
-	multiClusterEngine.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "multicluster.openshift.io",
-		Kind:    "MultiClusterEngine",
+// GetIngressDomain will determine the network domain of the default ingress controller
+func GetIngressDomain(ctx context.Context, c client.Client) (string, error) {
+	ingressController := &unstructured.Unstructured{}
+	ingressController.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "operator.openshift.io",
+		Kind:    "IngressController",
 		Version: "v1",
 	})
+
 	err := c.Get(ctx, client.ObjectKey{
-		Name: "multiclusterengine",
-	}, multiClusterEngine)
+		Name:      "default",
+		Namespace: "openshift-ingress-operator",
+	}, ingressController)
 
 	if err != nil {
-		oranUtilsLog.Info("[getACMNamespace] multiclusterengine object not found")
-		return "", fmt.Errorf("multiclusterengine object not found")
+		oranUtilsLog.Info(fmt.Sprintf("[getIngressDomain] default ingress controller object not found, error: %s", err))
+		return "", fmt.Errorf("default ingress controller object not found: %w", err)
 	}
 
-	// Get the ACM namespace by looking at the installer.namespace label.
-	multiClusterEngineMetadata := multiClusterEngine.Object["metadata"].(map[string]interface{})
-	multiClusterEngineLabels, labelsOk := multiClusterEngineMetadata["labels"]
+	status := ingressController.Object["status"].(map[string]interface{})
+	domain, ok := status["domain"]
 
-	if labelsOk {
-		acmNamespace, acmNamespaceOk := multiClusterEngineLabels.(map[string]interface{})["installer.namespace"]
-
-		if !acmNamespaceOk {
-			return "", fmt.Errorf("multiclusterengine labels do not contain the installer.namespace key")
-		}
-		return acmNamespace.(string), nil
+	if ok {
+		return domain.(string), nil
 	}
 
-	return "", fmt.Errorf("multiclusterengine object does not have expected labels")
+	return "", fmt.Errorf("default ingress controller does not have expected 'status.domain' attribute")
 }
 
-// getSearchAPI will dynamically obtain the search API.
-func getSearchAPI(ctx context.Context, c client.Client, inventory *inventoryv1alpha1.Inventory) (string, error) {
-	// Find the ACM namespace.
-	acmNamespace, err := getACMNamespace(ctx, c)
+// GetSearchAPI attempts to find the search-api service using its label selector
+func GetSearchAPI(ctx context.Context, c client.Client) (*corev1.Service, error) {
+	// Build the search criteria
+	selector := labels.NewSelector()
+	monitorSelector, err := labels.NewRequirement(SearchApiLabelKey, selection.Equals, []string{SearchApiLabelValue})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create search-api monitor selector: %w", err)
+	}
+
+	// Do the search
+	services := &corev1.ServiceList{}
+	err = c.List(ctx, services, &client.ListOptions{
+		LabelSelector: selector.Add(*monitorSelector),
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to list services: %w", err)
+	}
+
+	if len(services.Items) == 0 {
+		return nil, fmt.Errorf("failed to list services: no services found")
+	}
+
+	// Should only be 1 result therefore return the first item
+	return &services.Items[0], nil
+}
+
+// GetSearchURL attempts to build the Search API service URL by dynamically looking up the service.
+func GetSearchURL(ctx context.Context, c client.Client) (string, error) {
+	service, err := GetSearchAPI(ctx, c)
 	if err != nil {
 		return "", err
 	}
 
-	// Split the Ingress to obtain the domain for the Search API.
-	// searchAPIBackendURL example: https://search-api-open-cluster-management.apps.lab.karmalabs.corp
-	// IngressHost example:         o2ims.apps.lab.karmalabs.corp
-	// Note: The domain could also be obtained from the spec.host of the search-api route in the
-	// ACM namespace.
-	ingressSplit := strings.Split(inventory.Spec.IngressHost, ".apps")
-	if len(ingressSplit) != 2 {
-		return "", fmt.Errorf("the searchAPIBackendURL could not be obtained from the IngressHost. " +
-			"Directly specify the searchAPIBackendURL in the Inventory CR or update the IngressHost")
-	}
-	domain := ".apps" + ingressSplit[len(ingressSplit)-1]
-
-	// The searchAPI is obtained from the "search-api" string and the ACM namespace.
-	searchAPI := "https://" + "search-api-" + acmNamespace + domain
-
-	return searchAPI, nil
+	return fmt.Sprintf("https://%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, service.Spec.Ports[0].Port), nil
 }
 
-func GetServerArgs(ctx context.Context, c client.Client,
-	inventory *inventoryv1alpha1.Inventory,
-	serverName string) (result []string, err error) {
+// GetServerDatabasePasswordName retrieves name of the environment variable used to store the server's database password
+func GetServerDatabasePasswordName(serverName string) (string, error) {
+	switch serverName {
+	case InventoryAlarmServerName:
+		return AlarmsPasswordEnvName, nil
+	case InventoryResourceServerName:
+		return ResourcesPasswordEnvName, nil
+	default:
+		return "", fmt.Errorf("database name not found for server '%s'", serverName)
+	}
+}
+
+func GetServerArgs(inventory *inventoryv1alpha1.Inventory, serverName string) (result []string, err error) {
+	cloudId := DefaultOCloudID
+	if inventory.Spec.CloudID != nil {
+		cloudId = *inventory.Spec.CloudID
+	}
+
+	// AlarmServer
+	if serverName == InventoryAlarmServerName {
+		result = slices.Clone(AlarmServerArgs)
+		result = append(
+			result,
+			fmt.Sprintf("--global-cloud-id=%s", cloudId))
+		return
+	}
+
 	// MetadataServer
 	if serverName == InventoryMetadataServerName {
 		result = slices.Clone(MetadataServerArgs)
 		result = append(
 			result,
-			fmt.Sprintf("--cloud-id=%s", inventory.Spec.CloudId),
-			fmt.Sprintf("--external-address=https://%s", inventory.Spec.IngressHost))
+			fmt.Sprintf("--cloud-id=%s", inventory.Status.ClusterID),
+			fmt.Sprintf("--global-cloud-id=%s", cloudId),
+			fmt.Sprintf("--external-address=https://%s", inventory.Status.IngressHost))
 
 		return
 	}
 
 	// ResourceServer
 	if serverName == InventoryResourceServerName {
-		searchAPI := inventory.Spec.ResourceServerConfig.BackendURL
-		if searchAPI == "" {
-			searchAPI, err = getSearchAPI(ctx, c, inventory)
-			if err != nil {
-				return nil, err
-			}
-		}
-
 		result = slices.Clone(ResourceServerArgs)
 
 		// Add the cloud-id, backend-url, and token args:
 		result = append(
 			result,
-			fmt.Sprintf("--cloud-id=%s", inventory.Spec.CloudId),
-			fmt.Sprintf("--backend-url=%s", searchAPI),
+			fmt.Sprintf("--cloud-id=%s", inventory.Status.ClusterID),
+			fmt.Sprintf("--backend-url=%s", inventory.Status.SearchURL),
+			fmt.Sprintf("--global-cloud-id=%s", cloudId),
+			fmt.Sprintf("--namespace=%s", inventory.Namespace),
 			GetBackendTokenArg(inventory.Spec.ResourceServerConfig.BackendToken))
 
 		return result, nil
@@ -454,7 +361,7 @@ func GetServerArgs(ctx context.Context, c client.Client,
 		// Set the cloud identifier:
 		result = append(
 			result,
-			fmt.Sprintf("--cloud-id=%s", inventory.Spec.CloudId),
+			fmt.Sprintf("--cloud-id=%s", inventory.Status.ClusterID),
 		)
 
 		// Set the backend type:
@@ -469,7 +376,7 @@ func GetServerArgs(ctx context.Context, c client.Client,
 		// API server of the cluster:
 		backendURL := inventory.Spec.DeploymentManagerServerConfig.BackendURL
 		if backendURL == "" {
-			backendURL = defaultBackendURL
+			backendURL = defaultApiServerURL
 		}
 
 		// Add the backend and token args:
@@ -488,147 +395,13 @@ func GetServerArgs(ctx context.Context, c client.Client,
 	return
 }
 
-// RenderTemplateForK8sCR returns a rendered K8s resource with an given template and object data
-func RenderTemplateForK8sCR(templateName, templatePath string, templateDataObj map[string]any) (*unstructured.Unstructured, error) {
-	renderedTemplate := &unstructured.Unstructured{}
-
-	// Load the template from yaml file
-	tmplContent, err := files.Controllers.ReadFile(templatePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read template file: %s, err: %w", templatePath, err)
-	}
-
-	// Create a FuncMap with template functions
-	funcMap := sprig.TxtFuncMap()
-	funcMap["toYaml"] = toYaml
-	funcMap["validateNonEmpty"] = validateNonEmpty
-	funcMap["validateArrayType"] = validateArrayType
-	funcMap["validateMapType"] = validateMapType
-
-	// Parse the template
-	tmpl, err := template.New(templateName).Funcs(funcMap).Parse(string(tmplContent))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse template content from template file: %s, err: %w", templatePath, err)
-	}
-
-	// Execute the template with the data
-	var output bytes.Buffer
-	err = tmpl.Execute(&output, templateDataObj)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute template %s with data, err: %w", templateName, err)
-	}
-
-	err = yaml.Unmarshal(output.Bytes(), renderedTemplate)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal, err: %w", err)
-	}
-
-	return renderedTemplate, nil
-}
-
-// toYaml converts an interface to a YAML string and trims the trailing newline
-func toYaml(v any) (string, error) {
-	// yaml.Marshal adds a trailing newline to its output
-	yamlData, err := yaml.Marshal(v)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal interface to YAML: %w", err)
-	}
-
-	return strings.TrimRight(string(yamlData), "\n"), nil
-}
-
-// validateNonEmpty validates the input and fails if it is not provided or empty
-func validateNonEmpty(fieldName string, input any) (any, error) {
-	// Check if the input is empty (you can adjust this condition as per your validation logic)
-	if input == nil {
-		return nil, fmt.Errorf("%s must be provided", fieldName)
-	}
-
-	v := reflect.ValueOf(input)
-	if v.Kind() == reflect.String || v.Kind() == reflect.Slice || v.Kind() == reflect.Map {
-		if v.Len() == 0 {
-			return nil, fmt.Errorf("%s cannot be empty", fieldName)
-		}
-	}
-
-	return input, nil
-}
-
-// validateMapType checks if the input is of type map and raises an error if not.
-func validateMapType(fieldName string, input any) (any, error) {
-	if reflect.TypeOf(input).Kind() != reflect.Map {
-		return nil, fmt.Errorf("%s must be of type map", fieldName)
-	}
-	return input, nil
-}
-
-// validateArrayType checks if the input is of type slice (array) and raises an error if not.
-func validateArrayType(fieldName string, input any) (any, error) {
-	if reflect.TypeOf(input).Kind() != reflect.Slice {
-		return nil, fmt.Errorf("%s must be of type array", fieldName)
-	}
-	return input, nil
-}
-
-// extractBeforeDot returns the strubstring before the first dot.
-func extractBeforeDot(s string) string {
+// ExtractBeforeDot returns the strubstring before the first dot.
+func ExtractBeforeDot(s string) string {
 	dotIndex := strings.Index(s, ".")
 	if dotIndex == -1 {
 		return s
 	}
 	return s[:dotIndex]
-}
-
-// GetSecret attempts to retrieve a Secret object for the given name
-func GetSecret(ctx context.Context, c client.Client, name, namespace string) (*corev1.Secret, error) {
-	secret := &corev1.Secret{}
-	exists, err := DoesK8SResourceExist(ctx, c, name, namespace, secret)
-	if err != nil {
-		return nil, err
-	}
-
-	if !exists {
-		return nil, NewInputError(
-			"the Secret '%s' is not found in the namespace '%s'", name, namespace)
-	}
-	return secret, nil
-}
-
-// GetSecretField attempts to retrieve the value of the field using the provided field name
-func GetSecretField(secret *corev1.Secret, fieldName string) (string, error) {
-	encoded, ok := secret.Data[fieldName]
-	if !ok {
-		return "", NewInputError("the Secret '%s' does not contain a field named '%s'", secret.Name, fieldName)
-	}
-
-	return string(encoded), nil
-}
-
-// GetConfigmap attempts to retrieve a ConfigMap object for the given name
-func GetConfigmap(ctx context.Context, c client.Client, name, namespace string) (*corev1.ConfigMap, error) {
-	existingConfigmap := &corev1.ConfigMap{}
-	cmExists, err := DoesK8SResourceExist(
-		ctx, c, name, namespace, existingConfigmap)
-	if err != nil {
-		return nil, err
-	}
-
-	if !cmExists {
-		// Check if the configmap is missing
-		return nil, NewInputError(
-			"the ConfigMap '%s' is not found in the namespace '%s'", name, namespace)
-	}
-	return existingConfigmap, nil
-}
-
-// GetConfigMapField attempts to retrieve the value of the field using the provided field name
-func GetConfigMapField(cm *corev1.ConfigMap, fieldName string) (string, error) {
-	data, ok := cm.Data[fieldName]
-	if !ok {
-		return data, NewInputError("the ConfigMap '%s' does not contain a field named '%s'", cm.Name, fieldName)
-	}
-
-	return data, nil
 }
 
 // ExtractTemplateDataFromConfigMap extracts the template data associated with the specified key
@@ -651,21 +424,6 @@ func ExtractTemplateDataFromConfigMap[T any](cm *corev1.ConfigMap, expectedKey s
 		)
 	}
 	return validData, nil
-}
-
-// ExtractTimeoutFromConfigMap extracts the timeout config from the ConfigMap by key if exits.
-// converting it from duration string to time.Duration. Returns an error if the value is not a
-// valid duration string.
-func ExtractTimeoutFromConfigMap(cm *corev1.ConfigMap, key string) (time.Duration, error) {
-	if timeoutStr, err := GetConfigMapField(cm, key); err == nil {
-		timeout, err := time.ParseDuration(timeoutStr)
-		if err != nil {
-			return 0, NewInputError("the value of key %s from ConfigMap %s is not a valid duration string: %v", key, cm.GetName(), err)
-		}
-		return timeout, nil
-	}
-
-	return 0, nil
 }
 
 // DeepMergeMaps performs a deep merge of the src map into the dst map.
@@ -778,221 +536,6 @@ func DeepMergeSlices[K comparable, V any](dst, src []V, checkType bool) ([]V, er
 	return result, nil
 }
 
-// OverrideClusterInstanceLabelsOrAnnotations handles the overrides of ClusterInstance's extraLabels
-// or extraAnnotations. It overrides the values in the ProvisioningRequest with those from the default
-// configmap when the same labels/annotations exist in both. Labels/annotations that are not common
-// between the default configmap and ProvisioningRequest are ignored.
-func OverrideClusterInstanceLabelsOrAnnotations(dstProvisioningRequestInput, srcConfigmap map[string]any) error {
-	fields := []string{"extraLabels", "extraAnnotations"}
-
-	for _, field := range fields {
-		srcValue, existsSrc := srcConfigmap[field]
-		dstValue, existsDst := dstProvisioningRequestInput[field]
-		// Check only when both configmap and ProvisioningRequestInput contain the field
-		if existsSrc && existsDst {
-			dstMap, okDst := dstValue.(map[string]any)
-			srcMap, okSrc := srcValue.(map[string]any)
-			if !okDst || !okSrc {
-				return fmt.Errorf("type mismatch for field %s: (from ProvisioningRequest: %T, from default Configmap: %T)",
-					field, dstValue, srcValue)
-			}
-
-			// Iterate over the resource types (e.g., ManagedCluster, AgentClusterInstall)
-			// Check labels/annotations only if the resource exists in both
-			for resourceType, srcFields := range srcMap {
-				if dstFields, exists := dstMap[resourceType]; exists {
-					dstFieldsMap, okDstFields := dstFields.(map[string]any)
-					srcFieldsMap, okSrcFields := srcFields.(map[string]any)
-					if !okDstFields || !okSrcFields {
-						return fmt.Errorf("type mismatch for field %s: (from ProvisioningRequest: %T, from default Configmap: %T)",
-							field, dstValue, srcValue)
-					}
-
-					// Override ProvisioningRequestInput's values with defaults if the label/annotation key exists in both
-					for srcFieldKey, srcLabelValue := range srcFieldsMap {
-						if _, exists := dstFieldsMap[srcFieldKey]; exists {
-							oranUtilsLog.Info(fmt.Sprintf("%s.%s.%s found in both default configmap and clusterInstanceInput. "+
-								"Overriding it in ClusterInstanceInput with value %s from the default configmap.",
-								field, resourceType, srcFieldKey, srcLabelValue))
-							dstFieldsMap[srcFieldKey] = srcLabelValue
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Process label/annotation overrides for nodes
-	dstNodes, dstExists := dstProvisioningRequestInput["nodes"]
-	srcNodes, srcExists := srcConfigmap["nodes"]
-	if dstExists && srcExists {
-		// Determine the minimum length to merge
-		minLen := len(dstNodes.([]any))
-		if len(srcNodes.([]any)) < minLen {
-			minLen = len(srcNodes.([]any))
-		}
-
-		for i := 0; i < minLen; i++ {
-			if err := OverrideClusterInstanceLabelsOrAnnotations(
-				dstNodes.([]any)[i].(map[string]any),
-				srcNodes.([]any)[i].(map[string]any),
-			); err != nil {
-				return fmt.Errorf("type mismatch for nodes: %w", err)
-			}
-		}
-	}
-
-	return nil
-}
-
-func CopyK8sSecret(ctx context.Context, c client.Client, secretName, sourceNamespace, targetNamespace string) error {
-	// Get the secret from the source namespace
-	secret := &corev1.Secret{}
-	exists, err := DoesK8SResourceExist(
-		ctx, c, secretName, sourceNamespace, secret)
-
-	// If there was an error in trying to get the secret from the source namespace, return it.
-	if err != nil {
-		return fmt.Errorf("error obtaining the secret %s from namespace: %s: %w", secretName, sourceNamespace, err)
-	}
-
-	if !exists {
-		return fmt.Errorf("secret %s does not exist in namespace: %s", secretName, sourceNamespace)
-	}
-
-	// Modify the secret metadata to set the target namespace and remove resourceVersion
-	secret.ObjectMeta.Namespace = targetNamespace
-	secret.ObjectMeta.ResourceVersion = ""
-
-	// Create the secret in the target namespace
-	err = CreateK8sCR(ctx, c, secret, nil, UPDATE)
-	if err != nil {
-		return fmt.Errorf("failed to create secret %s in namespace %s: %w", secret.GetName(), secret.GetNamespace(), err)
-	}
-	return nil
-}
-
-// CheckClusterLabelsForPolicies checks if the cluster_version
-// label exist for a certain ClusterInstance and returns it.
-func CheckClusterLabelsForPolicies(
-	clusterName string, clusterLabels map[string]string) error {
-
-	if len(clusterLabels) == 0 {
-		return NewInputError(
-			"No cluster labels configured by the ClusterInstance %s(%s). "+
-				"Labels are needed for cluster configuration",
-			clusterName, clusterName,
-		)
-	}
-
-	// Make sure the cluster-version label exists.
-	_, clusterVersionLabelExists := clusterLabels[ClusterVersionLabelKey]
-	if !clusterVersionLabelExists {
-		return NewInputError(
-			"Managed cluster %s is missing the %s label. This label is needed for correctly "+
-				"generating and populating configuration data",
-			clusterName, ClusterVersionLabelKey,
-		)
-	}
-	return nil
-}
-
-// matchesPattern checks if the path matches the pattern
-func matchesPattern(path, pattern []string) bool {
-	if len(path) < len(pattern) {
-		return false
-	}
-
-	for i, p := range pattern {
-		if p == "*" {
-			// Wildcard matches any single element
-			continue
-		}
-		if path[i] != p {
-			return false
-		}
-	}
-
-	return true
-}
-
-// matchesAnyPattern checks if the given path matches any pattern in the provided list.
-func matchesAnyPattern(path []string, patterns [][]string) bool {
-	for _, pattern := range patterns {
-		if matchesPattern(path, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// FindClusterInstanceImmutableFieldUpdates identifies updates made to immutable fields
-// in the ClusterInstance spec. It returns two lists of paths: a list of updated fields
-// that are considered immutable and should not be modified and a list of fields related
-// to node scaling, indicating nodes that were added or removed.
-func FindClusterInstanceImmutableFieldUpdates(
-	oldClusterInstance, newClusterInstance *unstructured.Unstructured) ([]string, []string, error) {
-
-	oldClusterInstanceSpec := oldClusterInstance.Object["spec"].(map[string]any)
-	newClusterInstanceSpec := newClusterInstance.Object["spec"].(map[string]any)
-
-	diffs, err := diff.Diff(oldClusterInstanceSpec, newClusterInstanceSpec)
-	if err != nil {
-		return nil, nil, fmt.Errorf("error comparing differences between existing "+
-			"and newly rendered ClusterInstance: %w", err)
-	}
-
-	var updatedFields []string
-	var scalingNodes []string
-	for _, diff := range diffs {
-		/* Examples of diff result in json format
-
-		Label added at the cluster-level
-		  {"type": "create", "path": ["extraLabels", "ManagedCluster", "newLabelKey"], "from": null, "to": "newLabelValue"}
-
-		Field updated at the cluster-level
-		  {"type": "update", "path": ["baseDomain"], "from": "domain.example.com", "to": "newdomain.example.com"}
-
-		New node added
-		  {"type": "create", "path": ["nodes", "1"], "from": null, "to": {"hostName": "worker2"}}
-
-		Existing node removed
-		  {"type": "delete", "path": ["nodes", "1"], "from": {"hostName": "worker2"}, "to": null}
-
-		Field updated at the node-level
-		  {"type": "update", "path": ["nodes", "0", "nodeNetwork", "config", "dns-resolver", "config", "server", "0"], "from": "192.10.1.2", "to": "192.10.1.3"}
-		*/
-
-		oranUtilsLog.Info(
-			fmt.Sprintf(
-				"Detected field change in the newly rendered ClusterInstance(%s) type: %s, path: %s, from: %+v, to: %+v",
-				oldClusterInstance.GetName(), diff.Type, strings.Join(diff.Path, "."), diff.From, diff.To,
-			),
-		)
-
-		// Check if the path matches any allowed fields
-		if matchesAnyPattern(diff.Path, AllowedClusterInstanceFields) {
-			// Allowed field; skip
-			continue
-		}
-		// Check if the path matches any ignored fields
-		if matchesAnyPattern(diff.Path, IgnoredClusterInstanceFields) {
-			// Ignored field; skip
-			continue
-		}
-
-		// Check if the change is adding or removing a node.
-		// Path like ["nodes", "1"], indicating node addition or removal.
-		if diff.Path[0] == "nodes" && len(diff.Path) == 2 {
-			scalingNodes = append(scalingNodes, strings.Join(diff.Path, "."))
-			continue
-		}
-		updatedFields = append(updatedFields, strings.Join(diff.Path, "."))
-	}
-
-	return updatedFields, scalingNodes, nil
-}
-
 // GetTLSSkipVerify returns the current requested value of the TLS Skip Verify setting
 func GetTLSSkipVerify() bool {
 	value, ok := os.LookupEnv(TLSSkipVerifyEnvName)
@@ -1026,8 +569,8 @@ func loadDefaultCABundles(config *tls.Config) error {
 		config.RootCAs.AppendCertsFromPEM(data)
 	}
 
-	if data, err := os.ReadFile(defaultServiceCAFile); err != nil {
-		return fmt.Errorf("failed to read service CA file '%s': %w", defaultServiceCAFile, err)
+	if data, err := os.ReadFile(DefaultServiceCAFile); err != nil {
+		return fmt.Errorf("failed to read service CA file '%s': %w", DefaultServiceCAFile, err)
 	} else {
 		// This will enable accessing internal services signed by the service account signer.
 		config.RootCAs.AppendCertsFromPEM(data)
@@ -1067,54 +610,6 @@ func GetDefaultBackendTransport() (http.RoundTripper, error) {
 	return net.SetTransportDefaults(&http.Transport{TLSClientConfig: tlsConfig}), nil
 }
 
-// ClusterIsReadyForPolicyConfig checks if a cluster is ready for policy configuration
-// by looking at its availability, joined status and hub acceptance.
-func ClusterIsReadyForPolicyConfig(
-	ctx context.Context, c client.Client, clusterInstanceName string) (bool, error) {
-	// Check if the managed cluster is available. If not, return.
-	managedCluster := &clusterv1.ManagedCluster{}
-	managedClusterExists, err := DoesK8SResourceExist(
-		ctx, c, clusterInstanceName, "", managedCluster)
-	if err != nil {
-		return false, fmt.Errorf("failed to check if managed cluster exists: %w", err)
-	}
-	if !managedClusterExists {
-		return false, nil
-	}
-
-	available := false
-	hubAccepted := false
-	joined := false
-
-	availableCondition := meta.FindStatusCondition(
-		managedCluster.Status.Conditions,
-		clusterv1.ManagedClusterConditionAvailable)
-	if availableCondition != nil && availableCondition.Status == metav1.ConditionTrue {
-		available = true
-	}
-
-	acceptedCondition := meta.FindStatusCondition(
-		managedCluster.Status.Conditions,
-		clusterv1.ManagedClusterConditionHubAccepted)
-	if acceptedCondition != nil && acceptedCondition.Status == metav1.ConditionTrue {
-		hubAccepted = true
-	}
-
-	joinedCondition := meta.FindStatusCondition(
-		managedCluster.Status.Conditions,
-		clusterv1.ManagedClusterConditionJoined)
-	if joinedCondition != nil && joinedCondition.Status == metav1.ConditionTrue {
-		joined = true
-	}
-
-	return available && hubAccepted && joined, nil
-}
-
-// TimeoutExceeded returns true if it's been more time than the timeout configuration.
-func TimeoutExceeded(startTime time.Time, timeout time.Duration) bool {
-	return time.Since(startTime) > timeout
-}
-
 // GetEnvOrDefault returns the value of the named environment variable or the supplied default value if the environment
 // variable is not set.
 func GetEnvOrDefault(name, defaultValue string) string {
@@ -1123,72 +618,6 @@ func GetEnvOrDefault(name, defaultValue string) string {
 		return defaultValue
 	}
 	return value
-}
-
-// ExtractSubSchema extracts a Sub schema indexed by subSchemaKey from a Main schema
-func ExtractSubSchema(mainSchema []byte, subSchemaKey string) (subSchema map[string]any, err error) {
-	jsonObject := make(map[string]any)
-	if len(mainSchema) == 0 {
-		return subSchema, nil
-	}
-	err = json.Unmarshal(mainSchema, &jsonObject)
-	if err != nil {
-		return subSchema, fmt.Errorf("failed to UnMarshall Main Schema: %w", err)
-	}
-	if _, ok := jsonObject[PropertiesString]; !ok {
-		return subSchema, fmt.Errorf("non compliant Main Schema, missing 'properties' section: %w", err)
-	}
-	properties, ok := jsonObject[PropertiesString].(map[string]any)
-	if !ok {
-		return subSchema, fmt.Errorf("could not cast 'properties' section of schema as map[string]any: %w", err)
-	}
-
-	subSchemaValue, ok := properties[subSchemaKey]
-	if !ok {
-		return subSchema, fmt.Errorf("subSchema '%s' does not exist: %w", subSchemaKey, err)
-	}
-
-	subSchema, ok = subSchemaValue.(map[string]any)
-	if !ok {
-		return subSchema, fmt.Errorf("subSchema '%s' is not a valid map: %w", subSchemaKey, err)
-	}
-	return subSchema, nil
-}
-
-// ExtractMatchingInput extracts the portion of the input data that corresponds to a given subSchema key.
-func ExtractMatchingInput(parentSchema []byte, subSchemaKey string) (any, error) {
-	inputData := make(map[string]any)
-	err := json.Unmarshal(parentSchema, &inputData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal parent schema: %w", err)
-	}
-
-	// Check if the input contains the subSchema key
-	matchingInput, ok := inputData[subSchemaKey]
-	if !ok {
-		return nil, fmt.Errorf("parent schema does not contain key '%s': %w", subSchemaKey, err)
-	}
-	return matchingInput, nil
-}
-
-// ExtractSchemaRequired extracts the required field of a subschema
-func ExtractSchemaRequired(mainSchema []byte) (required []string, err error) {
-	requireListAny, err := ExtractMatchingInput(mainSchema, requiredString)
-	if err != nil {
-		return required, fmt.Errorf("could not extract the 'required' section of schema: %w", err)
-	}
-	requiredAny, ok := requireListAny.([]any)
-	if !ok {
-		return required, fmt.Errorf("could not cast 'required' section as []any")
-	}
-	for _, item := range requiredAny {
-		itemString, ok := item.(string)
-		if !ok {
-			return required, fmt.Errorf(`could not cast 'required' section item as a string`)
-		}
-		required = append(required, itemString)
-	}
-	return required, nil
 }
 
 // MapKeysToSlice takes a map[string]bool and returns a slice of strings containing the keys
@@ -1206,6 +635,11 @@ func MapKeysToSlice(inputMap map[string]bool) []string {
 // capabilities.
 func SetupOAuthClient(ctx context.Context, config OAuthClientConfig) (*http.Client, error) {
 	tlsConfig, _ := GetDefaultTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12})
+
+	if config.ClientCert != nil {
+		// Enable mTLS if a client certificate was provided.  The client CA is expected to be recognized by the server.
+		tlsConfig.Certificates = []tls.Certificate{*config.ClientCert}
+	}
 
 	if len(config.CaBundle) != 0 {
 		// If the user has provided a CA bundle then we must use it to build our client so that we can verify the
@@ -1245,8 +679,8 @@ func SetupOAuthClient(ctx context.Context, config OAuthClientConfig) (*http.Clie
 	return c, nil
 }
 
-// GetClusterId retrieves the UUID value for the cluster specified by name
-func GetClusterId(ctx context.Context, c client.Client, name string) (string, error) {
+// GetClusterID retrieves the UUID value for the cluster specified by name
+func GetClusterID(ctx context.Context, c client.Client, name string) (string, error) {
 	object := &openshiftv1.ClusterVersion{}
 
 	err := c.Get(ctx, types.NamespacedName{Name: name}, object)
@@ -1255,4 +689,112 @@ func GetClusterId(ctx context.Context, c client.Client, name string) (string, er
 	} else {
 		return string(object.Spec.ClusterID), nil
 	}
+}
+
+func GetIBGUFromUpgradeDefaultsConfigmap(
+	ctx context.Context,
+	c client.Client,
+	cmName string,
+	cmNamespace string,
+	cmKey string,
+	clusterName string,
+	ibguName string,
+	ibguNamespace string,
+) (*ibguv1alpha1.ImageBasedGroupUpgrade, error) {
+
+	existingConfigmap, err := GetConfigmap(ctx, c, cmName, cmNamespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ConfigmapReference: %w", err)
+	}
+	defaults, err := GetConfigMapField(existingConfigmap, UpgradeDefaultsConfigmapKey)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Configmap Field: %w", err)
+	}
+	out, err := k8syaml.ToJSON([]byte(defaults))
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert confimap data to JSON: %w", err)
+	}
+
+	ibguSpec := &ibguv1alpha1.ImageBasedGroupUpgradeSpec{}
+	err = json.Unmarshal(out, &ibguSpec)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert confimap data to IBGU spec: %w", err)
+	}
+	ibguSpec.ClusterLabelSelectors = []metav1.LabelSelector{
+		{
+			MatchLabels: map[string]string{
+				"name": clusterName,
+			},
+		},
+	}
+
+	return &ibguv1alpha1.ImageBasedGroupUpgrade{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ibguName,
+			Namespace: ibguNamespace,
+		},
+		Spec: *ibguSpec,
+	}, nil
+}
+
+// CreateDefaultInventoryCR creates the default Inventory CR so that the system has running servers
+func CreateDefaultInventoryCR(ctx context.Context, c client.Client) error {
+	inventory := inventoryv1alpha1.Inventory{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      DefaultInventoryCR,
+			Namespace: GetEnvOrDefault(DefaultNamespaceEnvName, DefaultNamespace),
+		},
+		Spec: inventoryv1alpha1.InventorySpec{
+			AlarmServerConfig: inventoryv1alpha1.AlarmServerConfig{
+				ServerConfig: inventoryv1alpha1.ServerConfig{
+					Enabled: true},
+			},
+			DeploymentManagerServerConfig: inventoryv1alpha1.DeploymentManagerServerConfig{
+				ServerConfig: inventoryv1alpha1.ServerConfig{
+					Enabled: true,
+				},
+			},
+			MetadataServerConfig: inventoryv1alpha1.MetadataServerConfig{
+				ServerConfig: inventoryv1alpha1.ServerConfig{
+					Enabled: true,
+				},
+			},
+			ResourceServerConfig: inventoryv1alpha1.ResourceServerConfig{
+				ServerConfig: inventoryv1alpha1.ServerConfig{
+					Enabled: true,
+				},
+			},
+		},
+	}
+
+	err := c.Create(ctx, &inventory)
+	if err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create default inventory CR: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// GetDatabaseHostname returns the URL used to access the database service
+func GetDatabaseHostname() string {
+	hostname, exists := os.LookupEnv(DatabaseHostnameEnvVar)
+	if !exists {
+		return fmt.Sprintf("%s.%s.svc.cluster.local",
+			InventoryDatabaseServerName, GetEnvOrDefault(DefaultNamespaceEnvName, DefaultNamespace))
+	}
+	return hostname
+}
+
+// GetPasswordOrRandom attempts to query a password from the environment and generates a random password if none was
+// found matching the supplied environment variable name.
+func GetPasswordOrRandom(envName string) string {
+	return GetEnvOrDefault(envName, uuid.Must(uuid.NewRandom()).String())
+}
+
+// GetServiceURL constructs the default service URL for a server
+func GetServiceURL(serverName string) string {
+	return fmt.Sprintf("https://%s.%s.svc.cluster.local:%d", serverName, GetEnvOrDefault(DefaultNamespaceEnvName, DefaultNamespace), DefaultServicePort)
 }

@@ -42,20 +42,20 @@ type NodePoolSpec struct {
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Location Spec",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
 	LocationSpec `json:",inline"`
 
-	// HwMgrId is the identifier for the hardware manager plugin adaptor.
+	// HwMgrId is the identifier for the hardware manager plugin instance.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Hardware Manager ID",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
 	HwMgrId string `json:"hwMgrId,omitempty"`
 
 	//+operator-sdk:csv:customresourcedefinitions:type=spec
 	NodeGroup []NodeGroup `json:"nodeGroup"`
+
+	//+operator-sdk:csv:customresourcedefinitions:type=spec
+	Extensions map[string]string `json:"extensions,omitempty"`
 }
 
 type NodeGroup struct {
-	Name      string `json:"name" yaml:"name"`
-	HwProfile string `json:"hwProfile"`
-	Size      int    `json:"size" yaml:"size"`
-	// +kubebuilder:validation:MinItems=1
-	Interfaces []string `json:"interfaces,omitempty"`
+	NodePoolData NodePoolData `json:"nodePoolData"` // Explicitly include as a named field
+	Size         int          `json:"size" yaml:"size"`
 }
 
 type Properties struct {
@@ -74,13 +74,12 @@ type NodePoolStatus struct {
 	//+operator-sdk:csv:customresourcedefinitions:type=status
 	Properties Properties `json:"properties,omitempty"`
 
-	// Conditions represent the observations of the NodePool's current state.
-	// Possible values of the condition type are `Provisioned` and `Unknown`.
+	// Conditions represent the latest available observations of an NodePool's state.
+	// +optional
+	// +kubebuilder:validation:Type=array
+	// +kubebuilder:validation:Items=Type=object
 	//+operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
-
-	//+operator-sdk:csv:customresourcedefinitions:type=status
-	CloudManager GenerationStatus `json:"cloudManager,omitempty"`
 
 	//+operator-sdk:csv:customresourcedefinitions:type=status
 	HwMgrPlugin GenerationStatus `json:"hwMgrPlugin,omitempty"`
@@ -91,6 +90,7 @@ type NodePoolStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=nodepools,shortName=orannp
+// +kubebuilder:printcolumn:name="HwMgr Id",type="string",JSONPath=".spec.hwMgrId"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.conditions[-1:].reason"
 // +operator-sdk:csv:customresourcedefinitions:displayName="Node Pool",resources={{Namespace, v1}}

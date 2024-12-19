@@ -46,12 +46,17 @@ func MetadataServer() *cobra.Command {
 	network.AddListenerFlags(flags, network.APIListener, network.APIAddress)
 	network.AddListenerFlags(flags, network.MetricsListener, network.MetricsAddress)
 	_ = flags.String(
-		cloudIDFlagName,
+		CloudIDFlagName,
 		"",
 		"O-Cloud identifier.",
 	)
 	_ = flags.String(
-		externalAddressFlagName,
+		GlobalCloudIDFlagName,
+		"",
+		"Global O-Cloud identifier.",
+	)
+	_ = flags.String(
+		ExternalAddressFlagName,
 		"",
 		"External address.",
 	)
@@ -94,12 +99,12 @@ func (c *MetadataServerCommand) run(cmd *cobra.Command, argv []string) error {
 	}
 
 	// Get the cloud identifier:
-	cloudID, err := flags.GetString(cloudIDFlagName)
+	cloudID, err := flags.GetString(CloudIDFlagName)
 	if err != nil {
 		logger.ErrorContext(
 			ctx,
 			"Failed to get cloud identifier flag",
-			"flag", cloudIDFlagName,
+			"flag", CloudIDFlagName,
 			"error", err.Error(),
 		)
 		return exit.Error(1)
@@ -108,7 +113,7 @@ func (c *MetadataServerCommand) run(cmd *cobra.Command, argv []string) error {
 		logger.ErrorContext(
 			ctx,
 			"Cloud identifier is empty",
-			"flag", cloudIDFlagName,
+			"flag", CloudIDFlagName,
 		)
 		return exit.Error(1)
 	}
@@ -118,13 +123,38 @@ func (c *MetadataServerCommand) run(cmd *cobra.Command, argv []string) error {
 		"value", cloudID,
 	)
 
+	// Get the cloud identifier:
+	globalCloudID, err := flags.GetString(GlobalCloudIDFlagName)
+	if err != nil {
+		logger.ErrorContext(
+			ctx,
+			"Failed to get global cloud identifier flag",
+			"flag", GlobalCloudIDFlagName,
+			"error", err.Error(),
+		)
+		return exit.Error(1)
+	}
+	if globalCloudID == "" {
+		logger.ErrorContext(
+			ctx,
+			"Global cloud identifier is empty",
+			"flag", GlobalCloudIDFlagName,
+		)
+		return exit.Error(1)
+	}
+	logger.InfoContext(
+		ctx,
+		"Global Cloud identifier",
+		"value", cloudID,
+	)
+
 	// Get the external address:
-	externalAddress, err := flags.GetString(externalAddressFlagName)
+	externalAddress, err := flags.GetString(ExternalAddressFlagName)
 	if err != nil {
 		logger.ErrorContext(
 			ctx,
 			"Failed to get external address flag",
-			slog.String("flag", externalAddressFlagName),
+			slog.String("flag", ExternalAddressFlagName),
 			slog.String("error", err.Error()),
 		)
 		return exit.Error(1)
@@ -217,6 +247,7 @@ func (c *MetadataServerCommand) run(cmd *cobra.Command, argv []string) error {
 	cloudInfoHandler, err := service.NewCloudInfoHandler().
 		SetLogger(logger).
 		SetCloudID(cloudID).
+		SetGlobalCloudID(globalCloudID).
 		SetExternalAddress(externalAddress).
 		Build()
 	if err != nil {

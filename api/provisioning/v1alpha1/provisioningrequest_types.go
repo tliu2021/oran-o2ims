@@ -64,6 +64,8 @@ type NodePoolRef struct {
 	Namespace string `json:"namespace,omitempty"`
 	// Represents the timestamp of the first status check for hardware provisioning
 	HardwareProvisioningCheckStart metav1.Time `json:"hardwareProvisioningCheckStart,omitempty"`
+	// Represents the timestamp of the first status check for hardware configuring
+	HardwareConfiguringCheckStart metav1.Time `json:"hardwareConfiguringCheckStart,omitempty"`
 }
 
 type ClusterDetails struct {
@@ -78,6 +80,17 @@ type ClusterDetails struct {
 
 	// Holds the first timestamp when the configuration was found NonCompliant for the cluster.
 	NonCompliantAt metav1.Time `json:"nonCompliantAt,omitempty"`
+}
+
+type Extensions struct {
+	// ClusterDetails references to the ClusterInstance.
+	ClusterDetails *ClusterDetails `json:"clusterDetails,omitempty"`
+
+	// NodePoolRef references to the NodePool.
+	NodePoolRef *NodePoolRef `json:"nodePoolRef,omitempty"`
+
+	// Holds policies that are matched with the ManagedCluster created by the ProvisioningRequest.
+	Policies []PolicyDetails `json:"policies,omitempty"`
 }
 
 // PolicyDetails holds information about an ACM policy.
@@ -107,6 +120,12 @@ const (
 	// StateFailed means the provisioning process has failed at any stage, including resource validation
 	// and preparation prior to provisioning, hardware provisioning, cluster installation, or cluster configuration.
 	StateFailed ProvisioningState = "failed"
+
+	// StateDeleting indicates that the provisioning resources are in the process of being deleted.
+	// This state is set when the deletion process for the ProvisioningRequest and its resources
+	// has started, ensuring that all dependent resources are removed before finalizing the
+	// ProvisioningRequest deletion.
+	StateDeleting ProvisioningState = "deleting"
 )
 
 // ProvisionedResources contains the resources that were provisioned as part of the provisioning process.
@@ -117,7 +136,7 @@ type ProvisionedResources struct {
 
 type ProvisioningStatus struct {
 	// The current state of the provisioning process.
-	// +kubebuilder:validation:Enum=progressing;fulfilled;failed
+	// +kubebuilder:validation:Enum=progressing;fulfilled;failed;deleting
 	ProvisioningState ProvisioningState `json:"provisioningState,omitempty"`
 
 	// The details about the current state of the provisioning process.
@@ -135,17 +154,9 @@ type ProvisioningRequestStatus struct {
 	//+operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// ClusterDetails references to the ClusterInstance.
-	//+operator-sdk:csv:customresourcedefinitions:type=status
-	ClusterDetails *ClusterDetails `json:"clusterDetails,omitempty"`
-
-	// NodePoolRef references to the NodePool.
-	//+operator-sdk:csv:customresourcedefinitions:type=status
-	NodePoolRef *NodePoolRef `json:"nodePoolRef,omitempty"`
-
-	// Holds policies that are matched with the ManagedCluster created by the ProvisioningRequest.
-	//+operator-sdk:csv:customresourcedefinitions:type=status
-	Policies []PolicyDetails `json:"policies,omitempty"`
+	// Extensions contain extra details about the resources and the configuration used for/by
+	// the ProvisioningRequest.
+	Extensions Extensions `json:"extensions,omitempty"`
 
 	ProvisioningStatus ProvisioningStatus `json:"provisioningStatus,omitempty"`
 }

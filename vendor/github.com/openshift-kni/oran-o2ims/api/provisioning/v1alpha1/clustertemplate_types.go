@@ -47,6 +47,9 @@ type ClusterTemplateSpec struct {
 	// Metadata defines a List of key/value pairs describing metadata associated with the template.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Metadata",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// Release defines the openshift release version of the template
+	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Release",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
+	Release string `json:"release"`
 	// Templates defines the references to the templates required for ClusterTemplate.
 	//+operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Templates",xDescriptors={"urn:alm:descriptor:com.tectonic.ui:text"}
 	Templates Templates `json:"templates"`
@@ -61,8 +64,8 @@ type ClusterTemplateSpec struct {
 
 // Templates defines the references to the templates required for ClusterTemplate.
 type Templates struct {
-	// HwTemplate defines a reference to a hardware template config map
-	HwTemplate string `json:"hwTemplate"`
+	// HwTemplate defines a reference to a HardwareTemplate resource
+	HwTemplate string `json:"hwTemplate,omitempty"`
 
 	// ClusterInstanceDefaults defines a reference to a configmap with
 	// default values for ClusterInstance
@@ -70,6 +73,9 @@ type Templates struct {
 	// PolicyTemplateDefaults defines a reference to a configmap with
 	// default values for ACM policies
 	PolicyTemplateDefaults string `json:"policyTemplateDefaults"`
+	// UpgradeDefaults defines a reference to a configmap with
+	// default values for upgrade information
+	UpgradeDefaults string `json:"upgradeDefaults,omitempty"`
 }
 
 // ClusterTemplateStatus defines the observed state of ClusterTemplate

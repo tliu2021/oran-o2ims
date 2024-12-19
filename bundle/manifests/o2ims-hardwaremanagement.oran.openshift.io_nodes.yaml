@@ -17,6 +17,15 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
+    - jsonPath: .spec.hwMgrId
+      name: HwMgr Id
+      type: string
+    - jsonPath: .spec.nodePool
+      name: NodePool
+      type: string
+    - jsonPath: .spec.hwMgrNodeId
+      name: HwMgr Node Id
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -48,8 +57,19 @@ spec:
           spec:
             description: NodeSpec describes a node presents a hardware server
             properties:
+              extensions:
+                additionalProperties:
+                  type: string
+                type: object
               groupName:
                 description: GroupName
+                type: string
+              hwMgrId:
+                description: HwMgrId is the identifier for the hardware manager instance.
+                type: string
+              hwMgrNodeId:
+                description: HwMgrNodeId is the node identifier from the hardware
+                  manager.
                 type: string
               hwProfile:
                 description: HwProfile
@@ -68,6 +88,7 @@ spec:
               a node that will eventually be part of a deployment manager.
             properties:
               bmc:
+                description: BMC describes BMC details of a hardware server
                 properties:
                   address:
                     description: The Address contains the URL for accessing the BMC
@@ -153,8 +174,11 @@ spec:
                 type: array
               hostname:
                 type: string
+              hwProfile:
+                type: string
               interfaces:
                 items:
+                  description: Interface describes an interface of a hardware server
                   properties:
                     label:
                       type: string

@@ -19,6 +19,7 @@ import (
 
 	"github.com/openshift-kni/oran-o2ims/internal/controllers/utils"
 	openshiftv1 "github.com/openshift/api/config/v1"
+	openshiftoperatorv1 "github.com/openshift/api/operator/v1"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -33,6 +34,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/go-logr/logr"
+	ibguv1alpha1 "github.com/openshift-kni/cluster-group-upgrades-operator/pkg/api/imagebasedgroupupgrades/v1alpha1"
 	hwv1alpha1 "github.com/openshift-kni/oran-o2ims/api/hardwaremanagement/v1alpha1"
 	inventoryv1alpha1 "github.com/openshift-kni/oran-o2ims/api/inventory/v1alpha1"
 	provisioningv1alpha1 "github.com/openshift-kni/oran-o2ims/api/provisioning/v1alpha1"
@@ -113,6 +115,8 @@ func init() {
 	utilruntime.Must(clusterv1.AddToScheme(scheme))
 	utilruntime.Must(policiesv1.AddToScheme(scheme))
 	utilruntime.Must(openshiftv1.AddToScheme(scheme))
+	utilruntime.Must(openshiftoperatorv1.AddToScheme(scheme))
+	utilruntime.Must(ibguv1alpha1.AddToScheme(scheme))
 }
 
 // run executes the `start controller-manager` command.
@@ -176,6 +180,17 @@ func (c *ControllerManagerCommand) run(cmd *cobra.Command, argv []string) error 
 		logger.ErrorContext(
 			ctx,
 			"Unable to start manager",
+			slog.String("error", err.Error()),
+		)
+		return exit.Error(1)
+	}
+
+	// Create the default inventory CR
+	err = utils.CreateDefaultInventoryCR(ctx, mgr.GetClient())
+	if err != nil {
+		logger.ErrorContext(
+			ctx,
+			"Failed to create default inventory CR",
 			slog.String("error", err.Error()),
 		)
 		return exit.Error(1)

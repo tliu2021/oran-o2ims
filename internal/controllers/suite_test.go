@@ -16,11 +16,14 @@ package controllers
 
 import (
 	"log/slog"
+	"os"
 	"testing"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2/dsl/core"
 	. "github.com/onsi/gomega"
+	openshiftv1 "github.com/openshift/api/config/v1"
+	openshiftoperatorv1 "github.com/openshift/api/operator/v1"
 	siteconfig "github.com/stolostron/siteconfig/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	ibguv1alpha1 "github.com/openshift-kni/cluster-group-upgrades-operator/pkg/api/imagebasedgroupupgrades/v1alpha1"
 	hwv1alpha1 "github.com/openshift-kni/oran-o2ims/api/hardwaremanagement/v1alpha1"
 	inventoryv1alpha1 "github.com/openshift-kni/oran-o2ims/api/inventory/v1alpha1"
 	provisioningv1alpha1 "github.com/openshift-kni/oran-o2ims/api/provisioning/v1alpha1"
@@ -52,8 +56,11 @@ func getFakeClientFromObjects(objs ...client.Object) client.WithWatch {
 		WithStatusSubresource(&provisioningv1alpha1.ProvisioningRequest{}).
 		WithStatusSubresource(&siteconfig.ClusterInstance{}).
 		WithStatusSubresource(&clusterv1.ManagedCluster{}).
+		WithStatusSubresource(&hwv1alpha1.HardwareTemplate{}).
 		WithStatusSubresource(&hwv1alpha1.NodePool{}).
 		WithStatusSubresource(&hwv1alpha1.Node{}).
+		WithStatusSubresource(&openshiftv1.ClusterVersion{}).
+		WithStatusSubresource(&openshiftoperatorv1.IngressController{}).
 		WithStatusSubresource(&policiesv1.Policy{}).
 		WithStatusSubresource(&clusterv1.ManagedCluster{}).
 		Build()
@@ -79,6 +86,8 @@ var _ = BeforeSuite(func() {
 	ctrl.SetLogger(adapter)
 	klog.SetLogger(adapter)
 
+	os.Setenv("HWMGR_PLUGIN_NAMESPACE", "hwmgr")
+
 	// Add all the required types to the scheme used by the tests:
 	scheme.AddKnownTypes(inventoryv1alpha1.GroupVersion, &inventoryv1alpha1.Inventory{})
 	scheme.AddKnownTypes(inventoryv1alpha1.GroupVersion, &inventoryv1alpha1.InventoryList{})
@@ -96,10 +105,14 @@ var _ = BeforeSuite(func() {
 	scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &appsv1.DeploymentList{})
 	scheme.AddKnownTypes(siteconfig.GroupVersion, &siteconfig.ClusterInstance{})
 	scheme.AddKnownTypes(siteconfig.GroupVersion, &siteconfig.ClusterInstanceList{})
+	scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &hwv1alpha1.HardwareTemplate{})
 	scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &hwv1alpha1.NodePool{})
 	scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &hwv1alpha1.Node{})
 	scheme.AddKnownTypes(policiesv1.SchemeGroupVersion, &policiesv1.Policy{})
 	scheme.AddKnownTypes(policiesv1.SchemeGroupVersion, &policiesv1.PolicyList{})
 	scheme.AddKnownTypes(clusterv1.SchemeGroupVersion, &clusterv1.ManagedCluster{})
 	scheme.AddKnownTypes(clusterv1.SchemeGroupVersion, &clusterv1.ManagedClusterList{})
+	scheme.AddKnownTypes(openshiftv1.SchemeGroupVersion, &openshiftv1.ClusterVersion{})
+	scheme.AddKnownTypes(openshiftoperatorv1.SchemeGroupVersion, &openshiftoperatorv1.IngressController{})
+	scheme.AddKnownTypes(ibguv1alpha1.SchemeGroupVersion, &ibguv1alpha1.ImageBasedGroupUpgrade{})
 })

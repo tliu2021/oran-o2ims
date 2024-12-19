@@ -26,13 +26,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/openshift-kni/oran-o2ims/internal/controllers/utils"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8sptr "k8s.io/utils/ptr"
+
+	"github.com/openshift-kni/oran-o2ims/internal/controllers/utils"
 
 	inventoryv1alpha1 "github.com/openshift-kni/oran-o2ims/api/inventory/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -48,6 +49,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
+//+kubebuilder:rbac:groups=monitoring.coreos.com,resources=prometheusrules,verbs=get;list;watch
+//+kubebuilder:rbac:groups=view.open-cluster-management.io,resources=managedclusterviews,verbs=create
+//+kubebuilder:rbac:groups=operator.openshift.io,resources=ingresscontrollers,verbs=get;list;watch
 //+kubebuilder:rbac:groups=authentication.k8s.io,resources=tokenreviews,verbs=create
 //+kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 //+kubebuilder:rbac:groups=o2ims.oran.openshift.io,resources=inventories,verbs=get;list;watch;create;update;patch;delete
@@ -61,10 +65,12 @@ import (
 //+kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=clusterroles,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="cluster.open-cluster-management.io",resources=managedclusters,verbs=get;list;watch
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;delete;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;delete;list;watch;update
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 //+kubebuilder:rbac:groups="internal.open-cluster-management.io",resources=managedclusterinfos,verbs=get;list;watch
 //+kubebuilder:rbac:groups="config.openshift.io",resources=clusterversions,verbs=get;list;watch
+//+kubebuilder:rbac:urls="/internal/v1/caas-alerts/alertmanager",verbs=create;post
+//+kubebuilder:rbac:urls="/o2ims-infrastructureInventory/v1/resourceTypes",verbs=get;list
 
 // Reconciler reconciles a Inventory object
 type Reconciler struct {
@@ -166,7 +172,7 @@ func (t *reconcilerTask) setupResourceServerConfig(ctx context.Context, defaultR
 	}
 
 	// Create the Service needed for the Resource server.
-	err = t.createService(ctx, utils.InventoryResourceServerName)
+	err = t.createService(ctx, utils.InventoryResourceServerName, utils.DefaultServicePort, utils.DefaultTargetPort)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
@@ -220,7 +226,7 @@ func (t *reconcilerTask) setupMetadataServerConfig(ctx context.Context, defaultR
 	}
 
 	// Create the Service needed for the Metadata server.
-	err = t.createService(ctx, utils.InventoryMetadataServerName)
+	err = t.createService(ctx, utils.InventoryMetadataServerName, utils.DefaultServicePort, utils.DefaultTargetPort)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
@@ -292,7 +298,7 @@ func (t *reconcilerTask) setupDeploymentManagerServerConfig(ctx context.Context,
 	}
 
 	// Create the Service needed for the Deployment Manager server.
-	err = t.createService(ctx, utils.InventoryDeploymentManagerServerName)
+	err = t.createService(ctx, utils.InventoryDeploymentManagerServerName, utils.DefaultServicePort, utils.DefaultTargetPort)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
@@ -319,16 +325,46 @@ func (t *reconcilerTask) setupDeploymentManagerServerConfig(ctx context.Context,
 	return
 }
 
-// setupAlarmSubscriptionServerConfig creates the resources necessary to start the Alarm Subscription Server.
-func (t *reconcilerTask) setupAlarmSubscriptionServerConfig(ctx context.Context, defaultResult ctrl.Result) (nextReconcile ctrl.Result, err error) {
+// setupAlarmServerConfig creates the resources necessary to start the Alarm Server.
+func (t *reconcilerTask) setupAlarmServerConfig(ctx context.Context, defaultResult ctrl.Result) (nextReconcile ctrl.Result, err error) {
 	nextReconcile = defaultResult
 
-	// Create the needed ServiceAccount.
-	err = t.createServiceAccount(ctx, utils.InventoryAlarmSubscriptionServerName)
+	err = t.createServiceAccount(ctx, utils.InventoryAlarmServerName)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
-			"Failed to deploy ServiceAccount for Alarm Subscription server.",
+			"Failed to deploy ServiceAccount for the alarm server.",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	err = t.createAlarmServerClusterRole(ctx)
+	if err != nil {
+		t.logger.ErrorContext(
+			ctx,
+			"Failed to create alarm server cluster role",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	err = t.createAlarmServerClusterRoleBinding(ctx)
+	if err != nil {
+		t.logger.ErrorContext(
+			ctx,
+			"Failed to create alarm server cluster role binding",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	// Needed for the Alertmanager to be able to send alerts to the alarm server
+	err = t.createAlertmanagerClusterRoleAndBinding(ctx)
+	if err != nil {
+		t.logger.ErrorContext(
+			ctx,
+			"Failed to create alertmanager cluster role and binding",
 			slog.String("error", err.Error()),
 		)
 		return
@@ -336,33 +372,33 @@ func (t *reconcilerTask) setupAlarmSubscriptionServerConfig(ctx context.Context,
 
 	// Create the role binding needed to allow the kube-rbac-proxy to interact with the API server to validate incoming
 	// API requests from clients.
-	err = t.createServerRbacClusterRoleBinding(ctx, utils.InventoryAlarmSubscriptionServerName)
+	err = t.createServerRbacClusterRoleBinding(ctx, utils.InventoryAlarmServerName)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
-			"Failed to create alarm subscription RBAC proxy cluster role binding",
+			"Failed to create alarm server RBAC proxy cluster role binding",
 			slog.String("error", err.Error()),
 		)
 		return
 	}
 
-	// Create the Service needed for the alarm subscription server.
-	err = t.createService(ctx, utils.InventoryAlarmSubscriptionServerName)
+	// Create the Service needed for the alarm server.
+	err = t.createService(ctx, utils.InventoryAlarmServerName, utils.DefaultServicePort, utils.DefaultTargetPort)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
-			"Failed to deploy Service for Alarm Subscription server.",
+			"Failed to deploy Service for alarm server.",
 			slog.String("error", err.Error()),
 		)
 		return
 	}
 
-	// Create the alarm subscription-server deployment.
-	errorReason, err := t.deployServer(ctx, utils.InventoryAlarmSubscriptionServerName)
+	// Create the alarm-server deployment.
+	errorReason, err := t.deployServer(ctx, utils.InventoryAlarmServerName)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
-			"Failed to deploy the alarm subscription server.",
+			"Failed to deploy the alarm server.",
 			slog.String("error", err.Error()),
 		)
 		if errorReason == "" {
@@ -371,7 +407,7 @@ func (t *reconcilerTask) setupAlarmSubscriptionServerConfig(ctx context.Context,
 		}
 	}
 
-	return
+	return nextReconcile, err
 }
 
 // setupOAuthClient is a wrapper around the similarly named method in the utils package.  The purpose for this wrapper
@@ -419,6 +455,16 @@ func (t *reconcilerTask) setupOAuthClient(ctx context.Context) (*http.Client, er
 		config.Scopes = oAuthConfig.Scopes
 	}
 
+	if t.object.Spec.SmoConfig.Tls != nil && t.object.Spec.SmoConfig.Tls.ClientCertificateName != nil {
+		secretName := *t.object.Spec.SmoConfig.Tls.ClientCertificateName
+		cert, err := utils.GetCertFromSecret(ctx, t.client, secretName, t.object.Namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get client certificate from secret: %w", err)
+		}
+
+		config.ClientCert = cert
+	}
+
 	httpClient, err := utils.SetupOAuthClient(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup OAuth client: %w", err)
@@ -429,11 +475,7 @@ func (t *reconcilerTask) setupOAuthClient(ctx context.Context) (*http.Client, er
 
 // registerWithSmo sends a message to the SMO to register our identifiers and URL
 func (t *reconcilerTask) registerWithSmo(ctx context.Context) error {
-	// Retrieve the local cluster id value.  It appears to always be identified as "version" in its metadata
-	clusterId, err := utils.GetClusterId(ctx, t.client, utils.ClusterVersionName)
-	if err != nil {
-		return fmt.Errorf("failed to get cluster id: %w", err)
-	}
+	smo := t.object.Spec.SmoConfig
 
 	httpClient, err := t.setupOAuthClient(ctx)
 	if err != nil {
@@ -441,9 +483,9 @@ func (t *reconcilerTask) registerWithSmo(ctx context.Context) error {
 	}
 
 	data := utils.AvailableNotification{
-		GlobalCloudId: t.object.Spec.CloudId,
-		OCloudId:      clusterId,
-		ImsEndpoint:   fmt.Sprintf("https://%s/o2ims-infrastructureInventory/v1", t.object.Spec.IngressHost),
+		GlobalCloudId: *t.object.Spec.CloudID,
+		OCloudId:      t.object.Status.ClusterID,
+		ImsEndpoint:   fmt.Sprintf("https://%s/o2ims-infrastructureInventory/v1", t.object.Status.IngressHost),
 	}
 
 	body, err := json.Marshal(data)
@@ -451,7 +493,6 @@ func (t *reconcilerTask) registerWithSmo(ctx context.Context) error {
 		return fmt.Errorf("failed to marshal AvailableNotification: %s", err.Error())
 	}
 
-	smo := t.object.Spec.SmoConfig
 	url := fmt.Sprintf("%s%s", smo.Url, smo.RegistrationEndpoint)
 	result, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -467,9 +508,9 @@ func (t *reconcilerTask) registerWithSmo(ctx context.Context) error {
 
 // setupSmo executes the high-level action set register with the SMO and set up the related conditions accordingly
 func (t *reconcilerTask) setupSmo(ctx context.Context) (err error) {
-	if t.object.Spec.SmoConfig == nil {
+	if t.object.Spec.SmoConfig == nil || t.object.Spec.CloudID == nil {
 		meta.SetStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			metav1.Condition{
 				Type:    string(utils.InventoryConditionTypes.SmoRegistrationCompleted),
 				Status:  metav1.ConditionFalse,
@@ -489,7 +530,7 @@ func (t *reconcilerTask) setupSmo(ctx context.Context) (err error) {
 			)
 
 			meta.SetStatusCondition(
-				&t.object.Status.DeploymentsStatus.Conditions,
+				&t.object.Status.Conditions,
 				metav1.Condition{
 					Type:    string(utils.InventoryConditionTypes.SmoRegistrationCompleted),
 					Status:  metav1.ConditionFalse,
@@ -502,7 +543,7 @@ func (t *reconcilerTask) setupSmo(ctx context.Context) (err error) {
 		}
 
 		meta.SetStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			metav1.Condition{
 				Type:    string(utils.InventoryConditionTypes.SmoRegistrationCompleted),
 				Status:  metav1.ConditionTrue,
@@ -522,9 +563,84 @@ func (t *reconcilerTask) setupSmo(ctx context.Context) (err error) {
 	return nil
 }
 
+// storeIngressDomain stores the ingress domain to be used onto the object status for later retrieval.
+func (t *reconcilerTask) storeIngressDomain(ctx context.Context) error {
+	// Determine our ingress domain
+	var ingressHost string
+	if t.object.Spec.IngressHost == nil {
+		var err error
+		ingressHost, err = utils.GetIngressDomain(ctx, t.client)
+		if err != nil {
+			t.logger.ErrorContext(
+				ctx,
+				"Failed to get ingress domain.",
+				slog.String("error", err.Error()))
+			return fmt.Errorf("failed to get ingress domain: %s", err.Error())
+		}
+		ingressHost = utils.DefaultAppName + "." + ingressHost
+	} else {
+		ingressHost = *t.object.Spec.IngressHost
+	}
+
+	t.object.Status.IngressHost = ingressHost
+
+	return nil
+}
+
+// storeClusterID stores the local cluster id onto the object status for later retrieval.
+func (t *reconcilerTask) storeClusterID(ctx context.Context) error {
+	clusterID, err := utils.GetClusterID(ctx, t.client, utils.ClusterVersionName)
+	if err != nil {
+		t.logger.ErrorContext(
+			ctx,
+			"Failed to get cluster id.",
+			slog.String("error", err.Error()))
+		return fmt.Errorf("failed to get cluster id: %s", err.Error())
+	}
+
+	t.object.Status.ClusterID = clusterID
+	return nil
+}
+
+// storeSearchURL stores the Search API URL onto the object status for later retrieval.
+func (t *reconcilerTask) storeSearchURL(ctx context.Context) error {
+	if t.object.Spec.ResourceServerConfig.BackendURL == "" {
+		searchURL, err := utils.GetSearchURL(ctx, t.client)
+		if err != nil {
+			t.logger.ErrorContext(
+				ctx,
+				"Failed to get Search API URL.",
+				slog.String("error", err.Error()))
+			return fmt.Errorf("failed to get Search API URL: %s", err.Error())
+		}
+		t.object.Status.SearchURL = searchURL
+	} else {
+		t.object.Status.SearchURL = t.object.Spec.ResourceServerConfig.BackendURL
+	}
+
+	return nil
+}
+
 func (t *reconcilerTask) run(ctx context.Context) (nextReconcile ctrl.Result, err error) {
 	// Set the default reconcile time to 5 minutes.
 	nextReconcile = ctrl.Result{RequeueAfter: 5 * time.Minute}
+
+	err = t.storeIngressDomain(ctx)
+	if err != nil {
+		return
+	}
+
+	if t.object.Status.ClusterID == "" {
+		err = t.storeClusterID(ctx)
+		if err != nil {
+			return
+		}
+	}
+
+	err = t.storeSearchURL(ctx)
+	if err != nil {
+		return
+	}
 
 	// Register with SMO (if necessary)
 	err = t.setupSmo(ctx)
@@ -532,9 +648,26 @@ func (t *reconcilerTask) run(ctx context.Context) (nextReconcile ctrl.Result, er
 		return
 	}
 
+	// Create the database
+	err = t.createDatabase(ctx)
+	if updateError := t.updateInventoryUsedConfigStatus(ctx, utils.InventoryDatabaseServerName,
+		nil, utils.InventoryConditionReasons.DatabaseDeploymentFailed, err); updateError != nil {
+		t.logger.ErrorContext(ctx, "Failed to report database status", slog.String("error", updateError.Error()))
+		return nextReconcile, updateError
+	}
+
+	if err != nil {
+		t.logger.ErrorContext(
+			ctx,
+			"Failed to create database.",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
 	// Create the needed Ingress if at least one server is required by the Spec.
 	if t.object.Spec.MetadataServerConfig.Enabled || t.object.Spec.DeploymentManagerServerConfig.Enabled ||
-		t.object.Spec.ResourceServerConfig.Enabled || t.object.Spec.AlarmSubscriptionServerConfig.Enabled {
+		t.object.Spec.ResourceServerConfig.Enabled || t.object.Spec.AlarmServerConfig.Enabled {
 		err = t.createIngress(ctx)
 		if err != nil {
 			t.logger.ErrorContext(
@@ -557,9 +690,17 @@ func (t *reconcilerTask) run(ctx context.Context) (nextReconcile ctrl.Result, er
 		}
 	}
 
+	// Start the alarm server if required by the Spec.
+	if t.object.Spec.AlarmServerConfig.Enabled {
+		// Create the resources required by the alarm server
+		nextReconcile, err = t.setupAlarmServerConfig(ctx, nextReconcile)
+		if err != nil {
+			return
+		}
+	}
+
 	// Start the resource server if required by the Spec.
 	if t.object.Spec.ResourceServerConfig.Enabled {
-		// The ResourceServer requires the searchAPIBackendURL. Check it has been defined.
 		// Create the needed ServiceAccount.
 		nextReconcile, err = t.setupResourceServerConfig(ctx, nextReconcile)
 		if err != nil {
@@ -585,16 +726,16 @@ func (t *reconcilerTask) run(ctx context.Context) (nextReconcile ctrl.Result, er
 		}
 	}
 
-	// Start the alarm subscription server if required by the Spec.
-	if t.object.Spec.AlarmSubscriptionServerConfig.Enabled {
-		// Create the alarm subscription server.
-		nextReconcile, err = t.setupAlarmSubscriptionServerConfig(ctx, nextReconcile)
+	// Start the alarm server if required by the Spec.
+	if t.object.Spec.AlarmServerConfig.Enabled {
+		// Create the alarm server.
+		nextReconcile, err = t.setupAlarmServerConfig(ctx, nextReconcile)
 		if err != nil {
 			return
 		}
 	}
 
-	err = t.updateORANO2ISMDeploymentStatus(ctx)
+	err = t.updateInventoryDeploymentStatus(ctx)
 	if err != nil {
 		t.logger.ErrorContext(
 			ctx,
@@ -757,6 +898,17 @@ func (t *reconcilerTask) createResourceServerClusterRole(ctx context.Context) er
 			},
 			{
 				APIGroups: []string{
+					"view.open-cluster-management.io",
+				},
+				Resources: []string{
+					"managedclusterviews",
+				},
+				Verbs: []string{
+					"create",
+				},
+			},
+			{
+				APIGroups: []string{
 					"",
 				},
 				Resources: []string{
@@ -766,6 +918,23 @@ func (t *reconcilerTask) createResourceServerClusterRole(ctx context.Context) er
 					"get",
 					"list",
 					"watch",
+				},
+			},
+			{
+				APIGroups: []string{
+					"",
+				},
+				Resources: []string{
+					"configmaps",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+					"create",
+					"update",
+					"patch",
+					"delete",
 				},
 			},
 			{
@@ -823,6 +992,179 @@ func (t *reconcilerTask) createResourceServerClusterRoleBinding(ctx context.Cont
 	return nil
 }
 
+func (t *reconcilerTask) createAlarmServerClusterRole(ctx context.Context) error {
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf(
+				"%s-%s", t.object.Namespace, utils.InventoryAlarmServerName,
+			),
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{
+					"cluster.open-cluster-management.io",
+				},
+				Resources: []string{
+					"managedclusters",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				APIGroups: []string{
+					"",
+				},
+				Resources: []string{
+					"services",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				APIGroups: []string{
+					"",
+				},
+				Resources: []string{
+					"secrets",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+					"update",
+				},
+			},
+			{
+				APIGroups: []string{
+					"monitoring.coreos.com",
+				},
+				Resources: []string{
+					"prometheusrules",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+					"watch",
+				},
+			},
+			{
+				NonResourceURLs: []string{
+					"/o2ims-infrastructureInventory/v1/resourceTypes",
+				},
+				Verbs: []string{
+					"get",
+					"list",
+				},
+			},
+		},
+	}
+
+	if err := utils.CreateK8sCR(ctx, t.client, role, t.object, utils.UPDATE); err != nil {
+		return fmt.Errorf("failed to create Alarm Server cluster role: %w", err)
+	}
+
+	return nil
+}
+
+func (t *reconcilerTask) createAlarmServerClusterRoleBinding(ctx context.Context) error {
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf(
+				"%s-%s",
+				t.object.Namespace, utils.InventoryAlarmServerName,
+			),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name: fmt.Sprintf(
+				"%s-%s",
+				t.object.Namespace, utils.InventoryAlarmServerName,
+			),
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Namespace: t.object.Namespace,
+				Name:      utils.InventoryAlarmServerName,
+			},
+		},
+	}
+
+	if err := utils.CreateK8sCR(ctx, t.client, binding, t.object, utils.UPDATE); err != nil {
+		return fmt.Errorf("failed to create Alarm Server cluster role binding: %w", err)
+	}
+
+	return nil
+}
+
+// createAlertmanagerClusterRoleAndBinding creates the cluster role and binding needed for the Alertmanager to be able to
+// send alerts to the alarm server.
+func (t *reconcilerTask) createAlertmanagerClusterRoleAndBinding(ctx context.Context) error {
+	// Cluster Role
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf(
+				"%s-%s", t.object.Namespace, utils.AlertmanagerObjectName,
+			),
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				NonResourceURLs: []string{
+					"/internal/v1/caas-alerts/alertmanager",
+				},
+				Verbs: []string{
+					// Expected to be post given that it is a nonResourceURLs, but it only works with create.
+					// Adding post in case something changes in the future. It doesn't hurt to have it.
+					"create",
+					"post",
+				},
+			},
+		},
+	}
+
+	if err := utils.CreateK8sCR(ctx, t.client, role, t.object, utils.UPDATE); err != nil {
+		return fmt.Errorf("failed to create Alertmanager cluster role: %w", err)
+	}
+
+	// Cluster Role Binding
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf(
+				"%s-%s",
+				t.object.Namespace, utils.AlertmanagerObjectName,
+			),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name: fmt.Sprintf(
+				"%s-%s",
+				t.object.Namespace, utils.AlertmanagerObjectName,
+			),
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Namespace: utils.AlertmanagerNamespace,
+				Name:      utils.AlertmanagerSA,
+			},
+		},
+	}
+
+	if err := utils.CreateK8sCR(ctx, t.client, binding, t.object, utils.UPDATE); err != nil {
+		return fmt.Errorf("failed to create Alertmanager cluster role binding: %w", err)
+	}
+
+	return nil
+}
+
 // createServerRbacClusterRoleBinding attaches the kube-rbac-proxy cluster role to the server's service account so that
 // its instance of the kube-rbac-proxy can access the kubernetes API via the service account credentials.
 func (t *reconcilerTask) createServerRbacClusterRoleBinding(ctx context.Context, serverName string) error {
@@ -874,9 +1216,9 @@ func (t *reconcilerTask) deployServer(ctx context.Context, serverName string) (u
 		},
 	}
 
-	deploymentContainerArgs, err := utils.GetServerArgs(ctx, t.client, t.object, serverName)
+	deploymentContainerArgs, err := utils.GetServerArgs(t.object, serverName)
 	if err != nil {
-		err2 := t.updateORANO2ISMUsedConfigStatus(
+		err2 := t.updateInventoryUsedConfigStatus(
 			ctx, serverName, deploymentContainerArgs,
 			utils.InventoryConditionReasons.ServerArgumentsError, err)
 		if err2 != nil {
@@ -884,27 +1226,44 @@ func (t *reconcilerTask) deployServer(ctx context.Context, serverName string) (u
 		}
 		return utils.InventoryConditionReasons.ServerArgumentsError, fmt.Errorf("failed to get server arguments: %w", err)
 	}
-	err = t.updateORANO2ISMUsedConfigStatus(ctx, serverName, deploymentContainerArgs, "", nil)
+	err = t.updateInventoryUsedConfigStatus(ctx, serverName, deploymentContainerArgs, "", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to update ORANO2ISMUsedConfigStatus: %w", err)
 	}
 
 	// Select the container image to use:
-	image := t.object.Spec.Image
-	if image == "" {
-		image = t.image
+	image := t.image
+	if t.object.Spec.Image != nil {
+		image = *t.object.Spec.Image
 	}
 
-	rbacProxyImage := t.object.Spec.KubeRbacProxyImage
+	rbacProxyImage := os.Getenv(utils.KubeRbacProxyImageName)
 	if rbacProxyImage == "" {
-		rbacProxyImage = os.Getenv(utils.KubeRbacProxyImageName)
-		if rbacProxyImage == "" {
-			return "", fmt.Errorf("missing %s environment variable value", utils.KubeRbacProxyImageName)
-		}
+		return "", fmt.Errorf("missing %s environment variable value", utils.KubeRbacProxyImageName)
 	}
 
 	// Disable privilege escalation for the RBAC proxy
 	privilegeEscalation := false
+
+	var envVars []corev1.EnvVar
+	if utils.HasDatabase(serverName) {
+		envVarName, err := utils.GetServerDatabasePasswordName(serverName)
+		if err != nil {
+			return "", fmt.Errorf("failed to get server database password: %w", err)
+		}
+		envVar := corev1.EnvVar{
+			Name: envVarName,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: fmt.Sprintf("%s-passwords", utils.InventoryDatabaseServerName),
+					},
+					Key: envVarName,
+				},
+			},
+		}
+		envVars = append(envVars, envVar)
+	}
 
 	// Build the deployment's spec.
 	deploymentSpec := appsv1.DeploymentSpec{
@@ -935,8 +1294,7 @@ func (t *reconcilerTask) deployServer(ctx context.Context, serverName string) (u
 								Drop: []corev1.Capability{"ALL"},
 							},
 						},
-						Image:           rbacProxyImage,
-						ImagePullPolicy: corev1.PullIfNotPresent,
+						Image: rbacProxyImage,
 						Args: []string{
 							"--secure-listen-address=0.0.0.0:8443",
 							"--upstream=http://127.0.0.1:8000/",
@@ -965,12 +1323,12 @@ func (t *reconcilerTask) deployServer(ctx context.Context, serverName string) (u
 						VolumeMounts: deploymentVolumeMounts,
 					},
 					{
-						Name:            utils.ServerContainerName,
-						Image:           image,
-						ImagePullPolicy: corev1.PullAlways,
-						VolumeMounts:    deploymentVolumeMounts,
-						Command:         []string{"/usr/bin/oran-o2ims"},
-						Args:            deploymentContainerArgs,
+						Name:         utils.ServerContainerName,
+						Image:        image,
+						VolumeMounts: deploymentVolumeMounts,
+						Command:      []string{"/usr/bin/oran-o2ims"},
+						Args:         deploymentContainerArgs,
+						Env:          envVars,
 						Ports: []corev1.ContainerPort{
 							{
 								Name:          "api",
@@ -982,6 +1340,18 @@ func (t *reconcilerTask) deployServer(ctx context.Context, serverName string) (u
 				},
 			},
 		},
+	}
+
+	if utils.HasDatabase(serverName) {
+		deploymentSpec.Template.Spec.InitContainers = []corev1.Container{
+			{
+				Name:    utils.MigrationContainerName,
+				Image:   image,
+				Command: []string{"/usr/bin/oran-o2ims"},
+				Args:    []string{serverName, "migrate"},
+				Env:     envVars,
+			},
+		}
 	}
 
 	// Build the deployment.
@@ -1020,7 +1390,7 @@ func (t *reconcilerTask) createServiceAccount(ctx context.Context, resourceName 
 	return nil
 }
 
-func (t *reconcilerTask) createService(ctx context.Context, resourceName string) error {
+func (t *reconcilerTask) createService(ctx context.Context, resourceName string, port int32, targetPort string) error {
 	t.logger.InfoContext(ctx, "[createService]")
 	// Build the Service object.
 	serviceMeta := metav1.ObjectMeta{
@@ -1041,8 +1411,8 @@ func (t *reconcilerTask) createService(ctx context.Context, resourceName string)
 		Ports: []corev1.ServicePort{
 			{
 				Name:       "api",
-				Port:       8000,
-				TargetPort: intstr.FromString("https"),
+				Port:       port,
+				TargetPort: intstr.FromString(targetPort),
 			},
 		},
 	}
@@ -1074,7 +1444,7 @@ func (t *reconcilerTask) createIngress(ctx context.Context) error {
 	ingressSpec := networkingv1.IngressSpec{
 		Rules: []networkingv1.IngressRule{
 			{
-				Host: t.object.Spec.IngressHost,
+				Host: t.object.Status.IngressHost,
 				IngressRuleValue: networkingv1.IngressRuleValue{
 					HTTP: &networkingv1.HTTPIngressRuleValue{
 						Paths: []networkingv1.HTTPIngressPath{
@@ -1109,6 +1479,21 @@ func (t *reconcilerTask) createIngress(ctx context.Context) error {
 								},
 							},
 							{
+								Path: "/o2ims-infrastructureInventory/v1/subscriptions",
+								PathType: func() *networkingv1.PathType {
+									pathType := networkingv1.PathTypePrefix
+									return &pathType
+								}(),
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: "resource-server",
+										Port: networkingv1.ServiceBackendPort{
+											Name: utils.InventoryIngressName,
+										},
+									},
+								},
+							},
+							{
 								Path: "/o2ims-infrastructureInventory/v1/deploymentManagers",
 								PathType: func() *networkingv1.PathType {
 									pathType := networkingv1.PathTypePrefix
@@ -1124,14 +1509,14 @@ func (t *reconcilerTask) createIngress(ctx context.Context) error {
 								},
 							},
 							{
-								Path: "/o2ims-infrastructureMonitoring/v1/alarmSubscriptions",
+								Path: "/o2ims-infrastructureMonitoring",
 								PathType: func() *networkingv1.PathType {
 									pathType := networkingv1.PathTypePrefix
 									return &pathType
 								}(),
 								Backend: networkingv1.IngressBackend{
 									Service: &networkingv1.IngressServiceBackend{
-										Name: "alarm-subscription-server",
+										Name: "alarms-server",
 										Port: networkingv1.ServiceBackendPort{
 											Name: utils.InventoryIngressName,
 										},
@@ -1173,7 +1558,7 @@ func (t *reconcilerTask) createIngress(ctx context.Context) error {
 	return nil
 }
 
-func (t *reconcilerTask) updateORANO2ISMStatusConditions(ctx context.Context, deploymentName string) {
+func (t *reconcilerTask) updateInventoryStatusConditions(ctx context.Context, deploymentName string) {
 	deployment := &appsv1.Deployment{}
 	err := t.client.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: utils.InventoryNamespace}, deployment)
 
@@ -1183,7 +1568,7 @@ func (t *reconcilerTask) updateORANO2ISMStatusConditions(ctx context.Context, de
 			reason = string(utils.InventoryConditionReasons.DeploymentNotFound)
 		}
 		meta.SetStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			metav1.Condition{
 				Type:    string(utils.InventoryConditionTypes.Error),
 				Status:  metav1.ConditionTrue,
@@ -1193,7 +1578,7 @@ func (t *reconcilerTask) updateORANO2ISMStatusConditions(ctx context.Context, de
 		)
 
 		meta.SetStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			metav1.Condition{
 				Type:    string(utils.InventoryConditionTypes.Ready),
 				Status:  metav1.ConditionFalse,
@@ -1203,16 +1588,16 @@ func (t *reconcilerTask) updateORANO2ISMStatusConditions(ctx context.Context, de
 		)
 	} else {
 		meta.RemoveStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			string(utils.InventoryConditionTypes.Error))
 		meta.RemoveStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			string(utils.InventoryConditionTypes.Ready))
 		for _, condition := range deployment.Status.Conditions {
 			// Obtain the status directly from the Deployment resources.
 			if condition.Type == "Available" {
 				meta.SetStatusCondition(
-					&t.object.Status.DeploymentsStatus.Conditions,
+					&t.object.Status.Conditions,
 					metav1.Condition{
 						Type:    string(utils.MapAvailableDeploymentNameConditionType[deploymentName]),
 						Status:  metav1.ConditionStatus(condition.Status),
@@ -1225,10 +1610,10 @@ func (t *reconcilerTask) updateORANO2ISMStatusConditions(ctx context.Context, de
 	}
 }
 
-func (t *reconcilerTask) updateORANO2ISMUsedConfigStatus(
+func (t *reconcilerTask) updateInventoryUsedConfigStatus(
 	ctx context.Context, serverName string, deploymentArgs []string,
 	errorReason utils.InventoryConditionReason, err error) error {
-	t.logger.InfoContext(ctx, "[updateORANO2ISMUsedConfigStatus]")
+	t.logger.InfoContext(ctx, "[updateInventoryUsedConfigStatus]")
 
 	if serverName == utils.InventoryMetadataServerName {
 		t.object.Status.UsedServerConfig.MetadataServerUsedConfig = deploymentArgs
@@ -1245,7 +1630,7 @@ func (t *reconcilerTask) updateORANO2ISMUsedConfigStatus(
 	// If there is an error passed, include it in the condition.
 	if err != nil {
 		meta.SetStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			metav1.Condition{
 				Type:    string(utils.MapErrorDeploymentNameConditionType[serverName]),
 				Status:  "True",
@@ -1255,38 +1640,44 @@ func (t *reconcilerTask) updateORANO2ISMUsedConfigStatus(
 		)
 
 		meta.RemoveStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			string(utils.MapAvailableDeploymentNameConditionType[serverName]))
 	} else {
 		meta.RemoveStatusCondition(
-			&t.object.Status.DeploymentsStatus.Conditions,
+			&t.object.Status.Conditions,
 			string(utils.MapErrorDeploymentNameConditionType[serverName]))
 	}
 
 	if err := utils.UpdateK8sCRStatus(ctx, t.client, t.object); err != nil {
-		return fmt.Errorf("failed to update ORANO2ISMUsedConfig CR status: %w", err)
+		return fmt.Errorf("failed to update inventory used config CR status: %w", err)
 	}
 
 	return nil
 }
 
-func (t *reconcilerTask) updateORANO2ISMDeploymentStatus(ctx context.Context) error {
+func (t *reconcilerTask) updateInventoryDeploymentStatus(ctx context.Context) error {
 
-	t.logger.InfoContext(ctx, "[updateORANO2ISMDeploymentStatus]")
+	t.logger.InfoContext(ctx, "[updateInventoryDeploymentStatus]")
+	if t.object.Spec.AlarmServerConfig.Enabled {
+		t.updateInventoryStatusConditions(ctx, utils.InventoryAlarmServerName)
+	}
+
 	if t.object.Spec.MetadataServerConfig.Enabled {
-		t.updateORANO2ISMStatusConditions(ctx, utils.InventoryMetadataServerName)
+		t.updateInventoryStatusConditions(ctx, utils.InventoryMetadataServerName)
 	}
 
 	if t.object.Spec.DeploymentManagerServerConfig.Enabled {
-		t.updateORANO2ISMStatusConditions(ctx, utils.InventoryDeploymentManagerServerName)
+		t.updateInventoryStatusConditions(ctx, utils.InventoryDeploymentManagerServerName)
 	}
 
 	if t.object.Spec.ResourceServerConfig.Enabled {
-		t.updateORANO2ISMStatusConditions(ctx, utils.InventoryResourceServerName)
+		t.updateInventoryStatusConditions(ctx, utils.InventoryResourceServerName)
 	}
 
+	t.updateInventoryStatusConditions(ctx, utils.InventoryDatabaseServerName)
+
 	if err := utils.UpdateK8sCRStatus(ctx, t.client, t.object); err != nil {
-		return fmt.Errorf("failed to update ORANO2ISMDeployment CR status: %w", err)
+		return fmt.Errorf("failed to update inventory deployment CR status: %w", err)
 	}
 
 	return nil

@@ -2,9 +2,10 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"slices"
 	"sync"
+	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -22,70 +23,53 @@ var (
 	once                 sync.Once
 )
 
-// FindNodeGroupByRole finds the matching NodeGroup by role
-func FindNodeGroupByRole(role string, nodeGroups []hwv1alpha1.NodeGroup) (*hwv1alpha1.NodeGroup, error) {
-	for i, group := range nodeGroups {
-		if group.Name == role {
-			return &nodeGroups[i], nil
-		}
-	}
-	return nil, fmt.Errorf("node group with role %s not found", role)
+// ConditionDoesNotExistsErr represents an error when a specific condition is missing
+type ConditionDoesNotExistsErr struct {
+	ConditionName string
 }
 
-// ProcessClusterNodeGroups extracts the node interfaces per role and count the nodes per group
-func ProcessClusterNodeGroups(clusterInstance *siteconfig.ClusterInstance, nodeGroups []hwv1alpha1.NodeGroup, roleCounts map[string]int) error {
-	// Map to keep track of processed roles and the corresponding interfaces
-	processedRoles := make(map[string][]string)
-
-	for _, node := range clusterInstance.Spec.Nodes {
-		// Count the nodes per group
-		roleCounts[node.Role]++
-
-		// Find the node group corresponding to this role
-		nodeGroup, err := FindNodeGroupByRole(node.Role, nodeGroups)
-		if err != nil {
-			return fmt.Errorf("could not find node group for role %s: %w", node.Role, err)
-		}
-
-		// Get the interface names for the current node
-		var currentInterfaces []string
-		for _, iface := range node.NodeNetwork.Interfaces {
-			currentInterfaces = append(currentInterfaces, iface.Name)
-		}
-
-		// If the role has not been processed yet, add the interfaces
-		// else check if the interfaces are the same as the first node with this role
-		if _, ok := processedRoles[node.Role]; !ok {
-			nodeGroup.Interfaces = currentInterfaces
-			processedRoles[node.Role] = currentInterfaces
-		} else if !slices.Equal(processedRoles[node.Role], currentInterfaces) {
-			// Nodes with the same role and hardware profile should have identical interfaces
-			return fmt.Errorf("%s has inconsistent interfaces for role %s", node.HostName, node.Role)
-		}
-	}
-	return nil
+// Error implements the error interface for ConditionDoesNotExistsErr,
+// returning a formatted error message
+func (e *ConditionDoesNotExistsErr) Error() string {
+	return fmt.Sprintf("Condition does not exist: %s", e.ConditionName)
 }
 
-// GetBootMacAddress selects the boot interface based on label and return the interface MAC address
-func GetBootMacAddress(interfaces []*hwv1alpha1.Interface, nodePool *hwv1alpha1.NodePool) (string, error) {
-	// Get the boot interface label from annotation
+// IsConditionDoesNotExistsErr checks if the given error is of type ConditionDoesNotExistsErr
+func IsConditionDoesNotExistsErr(err error) bool {
+	var customErr *ConditionDoesNotExistsErr
+	return errors.As(err, &customErr)
+}
+
+// getBootInterfaceLabel extracts the boot interface label from the NodePool annotations
+func getBootInterfaceLabel(nodePool *hwv1alpha1.NodePool) (string, error) {
+	// Get the annotations from the NodePool
 	annotation := nodePool.GetAnnotations()
 	if annotation == nil {
 		return "", fmt.Errorf("annotations are missing from nodePool %s in namespace %s", nodePool.Name, nodePool.Namespace)
 	}
+
 	// Ensure the boot interface label annotation exists and is not empty
 	bootIfaceLabel, exists := annotation[HwTemplateBootIfaceLabel]
 	if !exists || bootIfaceLabel == "" {
 		return "", fmt.Errorf("%s annotation is missing or empty from nodePool %s in namespace %s",
 			HwTemplateBootIfaceLabel, nodePool.Name, nodePool.Namespace)
 	}
+	return bootIfaceLabel, nil
+}
 
+// GetBootMacAddress selects the boot interface based on label and return the interface MAC address
+func GetBootMacAddress(interfaces []*hwv1alpha1.Interface, nodePool *hwv1alpha1.NodePool) (string, error) {
+	// Get the boot interface label from annotation
+	bootIfaceLabel, err := getBootInterfaceLabel(nodePool)
+	if err != nil {
+		return "", fmt.Errorf("error getting boot interface label: %w", err)
+	}
 	for _, iface := range interfaces {
 		if iface.Label == bootIfaceLabel {
 			return iface.MACAddress, nil
 		}
 	}
-	return "", fmt.Errorf("no boot interface found")
+	return "", fmt.Errorf("no boot interface found; missing interface with label %q", bootIfaceLabel)
 }
 
 // CollectNodeDetails collects BMC and node interfaces details
@@ -225,36 +209,16 @@ func GetHwMgrPluginNS() string {
 	return hwMgrPluginNameSpace
 }
 
-// SetCloudManagerGenerationStatus sets the CloudManager's ObservedGeneration on the node pool resource status field
-func SetCloudManagerGenerationStatus(ctx context.Context, c client.Client, nodePool *hwv1alpha1.NodePool) error {
-	// Get the generated NodePool and its metadata.generation
-	exists, err := DoesK8SResourceExist(ctx, c, nodePool.GetName(),
-		nodePool.GetNamespace(), nodePool)
-	if err != nil {
-		return fmt.Errorf("failed to get NodePool %s in namespace %s: %w", nodePool.GetName(), nodePool.GetNamespace(), err)
-	}
-	if !exists {
-		return fmt.Errorf("nodePool %s does not exist in namespace %s: %w", nodePool.GetName(), nodePool.GetNamespace(), err)
-	}
-	// We only set ObservedGeneration when the NodePool is first created because we do not update the spec after creation.
-	// Once ObservedGeneration is set, no need to update it again.
-	if nodePool.Status.CloudManager.ObservedGeneration != 0 {
-		// ObservedGeneration is already set, so we do nothing.
-		return nil
-	}
-	// Set ObservedGeneration to the current generation of the resource
-	nodePool.Status.CloudManager.ObservedGeneration = nodePool.ObjectMeta.Generation
-	err = UpdateK8sCRStatus(ctx, c, nodePool)
-	if err != nil {
-		return fmt.Errorf("failed to update status for NodePool %s %s: %w", nodePool.GetName(), nodePool.GetNamespace(), err)
-	}
-	return nil
-}
-
 // getInterfaces extracts the interfaces from the node map.
 func getInterfaces(nodeMap map[string]interface{}) []map[string]interface{} {
 	if nodeNetwork, ok := nodeMap["nodeNetwork"].(map[string]interface{}); ok {
+		if !ok {
+			return nil
+		}
 		if interfaces, ok := nodeNetwork["interfaces"].([]any); ok {
+			if !ok {
+				return nil
+			}
 			var result []map[string]interface{}
 			for _, iface := range interfaces {
 				if eth, ok := iface.(map[string]interface{}); ok {
@@ -296,7 +260,7 @@ OuterLoop:
 			// Extraction of interfaces from the node map in the cluster input
 			interfaces := getInterfaces(nodeMapInput)
 			if interfaces == nil {
-				return fmt.Errorf("failed to extrace the interfaces from the node map")
+				return fmt.Errorf("failed to extract the interfaces from the node map")
 			}
 			// Iterate over extracted interfaces and hardware interfaces to find matches.
 			// If an interface in the input data has a label that matches a hardware interface’s label,
@@ -323,4 +287,198 @@ OuterLoop:
 		}
 	}
 	return nil
+}
+
+// HandleHardwareTimeout checks for provisioning or configuration timeout
+func HandleHardwareTimeout(
+	condition hwv1alpha1.ConditionType,
+	provisioningStartTime metav1.Time,
+	configurationStartTime metav1.Time,
+	timeout time.Duration,
+	currentReason string,
+	currentMessage string) (bool, string, string) {
+
+	reason := currentReason
+	message := currentMessage
+	timedOutOrFailed := false
+
+	// Handle timeout for Provisioned condition
+	if condition == hwv1alpha1.Provisioned && TimeoutExceeded(provisioningStartTime.Time, timeout) {
+		reason = string(hwv1alpha1.TimedOut)
+		message = "Hardware provisioning timed out"
+		timedOutOrFailed = true
+		return timedOutOrFailed, reason, message
+	}
+
+	// Handle timeout for Configured condition
+	if condition == hwv1alpha1.Configured && TimeoutExceeded(configurationStartTime.Time, timeout) {
+		reason = string(hwv1alpha1.TimedOut)
+		message = "Hardware configuration timed out"
+		timedOutOrFailed = true
+		return timedOutOrFailed, reason, message
+	}
+
+	// Return the current reason and message when no timeout occurred
+	return timedOutOrFailed, reason, message
+}
+
+// CompareHardwareTemplateWithNodePool checks if there are any changes in the hardware template resource
+func CompareHardwareTemplateWithNodePool(hardwareTemplate *hwv1alpha1.HardwareTemplate, nodePool *hwv1alpha1.NodePool) (bool, error) {
+
+	changesDetected := false
+
+	// Check for changes in hwMgrId
+	if hardwareTemplate.Spec.HwMgrId != nodePool.Spec.HwMgrId {
+		return true, fmt.Errorf("unallowed change detected in '%s': Hardware Template has %s, but NodePool has %s",
+			HwTemplatePluginMgr, hardwareTemplate.Spec.HwMgrId, nodePool.Spec.HwMgrId)
+	}
+
+	// Check for changes in bootInterfaceLabel
+	bootIfaceLabel, err := getBootInterfaceLabel(nodePool)
+	if err != nil {
+		return false, err
+	}
+	if hardwareTemplate.Spec.BootInterfaceLabel != bootIfaceLabel {
+		return true, fmt.Errorf("unallowed change detected in '%s': Hardware Template has %s, but NodePool has %s",
+			HwTemplateBootIfaceLabel, hardwareTemplate.Spec.BootInterfaceLabel, bootIfaceLabel)
+	}
+
+	// Check each group, allowing only hwProfile to be changed
+	for _, specNodeGroup := range nodePool.Spec.NodeGroup {
+		var found bool
+		for _, ng := range hardwareTemplate.Spec.NodePoolData {
+
+			if specNodeGroup.NodePoolData.Name == ng.Name {
+				found = true
+
+				// Check for changes in HwProfile
+				if specNodeGroup.NodePoolData.HwProfile != ng.HwProfile {
+					changesDetected = true
+				}
+				break
+			}
+		}
+
+		// If no match was found for the current specNodeGroup, return an error
+		if !found {
+			return true, fmt.Errorf("node group %s found in NodePool spec but not in Hardware Template", specNodeGroup.NodePoolData.Name)
+		}
+	}
+
+	return changesDetected, nil
+}
+
+// GetStatusMessage returns a status message based on the given condition typ
+func GetStatusMessage(condition hwv1alpha1.ConditionType) string {
+	if condition == hwv1alpha1.Configured {
+		return "configuring"
+	}
+	return "provisioning"
+}
+
+// GetRoleToGroupNameMap creates a mapping of Role to Group Name from NodePool
+func GetRoleToGroupNameMap(nodePool *hwv1alpha1.NodePool) map[string]string {
+	roleToNodeGroupName := make(map[string]string)
+	for _, nodeGroup := range nodePool.Spec.NodeGroup {
+
+		if _, exists := roleToNodeGroupName[nodeGroup.NodePoolData.Role]; !exists {
+			roleToNodeGroupName[nodeGroup.NodePoolData.Role] = nodeGroup.NodePoolData.Name
+		}
+	}
+	return roleToNodeGroupName
+}
+
+// GetHardwareTemplate retrieves the hardware template resource for a given name
+func GetHardwareTemplate(ctx context.Context, c client.Client, hwTemplateName string) (*hwv1alpha1.HardwareTemplate, error) {
+	hwTemplate := &hwv1alpha1.HardwareTemplate{}
+
+	exists, err := DoesK8SResourceExist(ctx, c, hwTemplateName, InventoryNamespace, hwTemplate)
+	if err != nil {
+		return hwTemplate, fmt.Errorf("failed to retrieve hardware template resource %s: %w", hwTemplateName, err)
+	}
+	if !exists {
+		return hwTemplate, fmt.Errorf("hardware template resource %s does not exist", hwTemplateName)
+	}
+	return hwTemplate, nil
+}
+
+// NewNodeGroup populates NodeGroup
+func NewNodeGroup(group hwv1alpha1.NodePoolData, roleCounts map[string]int) hwv1alpha1.NodeGroup {
+	var nodeGroup hwv1alpha1.NodeGroup
+
+	// Populate embedded NodePoolData fields
+	nodeGroup.NodePoolData = group
+
+	// Assign size if available in roleCounts
+	if count, ok := roleCounts[group.Role]; ok {
+		nodeGroup.Size = count
+	}
+
+	return nodeGroup
+}
+
+// SetNodePoolAnnotations sets annotations on the NodePool
+func SetNodePoolAnnotations(nodePool *hwv1alpha1.NodePool, name, value string) {
+	annotations := nodePool.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[name] = value
+	nodePool.SetAnnotations(annotations)
+}
+
+// SetNodePoolLabels sets labels on the NodePool
+func SetNodePoolLabels(nodePool *hwv1alpha1.NodePool, label, value string) {
+	labels := nodePool.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[label] = value
+	nodePool.SetLabels(labels)
+}
+
+// UpdateHardwareTemplateStatusCondition updates the status condition of the HardwareTemplate resource
+func UpdateHardwareTemplateStatusCondition(ctx context.Context, c client.Client, hardwareTemplate *hwv1alpha1.HardwareTemplate,
+	conditionType ConditionType, conditionReason ConditionReason, conditionStatus metav1.ConditionStatus, message string) error {
+
+	SetStatusCondition(&hardwareTemplate.Status.Conditions,
+		conditionType,
+		conditionReason,
+		conditionStatus,
+		message)
+
+	err := UpdateK8sCRStatus(ctx, c, hardwareTemplate)
+	if err != nil {
+		return fmt.Errorf("failed to update status for HardwareTemplate %s: %w", hardwareTemplate.Name, err)
+	}
+	return nil
+}
+
+// GetTimeoutFromHWTemplate retrieves the timeout value from the hardware template resource.
+// converting it from duration string to time.Duration. Returns an error if the value is not a
+// valid duration string.
+func GetTimeoutFromHWTemplate(ctx context.Context, c client.Client, name string) (time.Duration, error) {
+
+	hwTemplate, err := GetHardwareTemplate(ctx, c, name)
+	if err != nil {
+		return 0, err
+	}
+
+	if hwTemplate.Spec.HardwareProvisioningTimeout != "" {
+		timeout, err := time.ParseDuration(hwTemplate.Spec.HardwareProvisioningTimeout)
+		if err != nil {
+			errMessage := fmt.Sprintf("the value of HardwareProvisioningTimeout from hardware template %s is not a valid duration string: %v",
+				name, err)
+			updateErr := UpdateHardwareTemplateStatusCondition(ctx, c, hwTemplate, ConditionType(hwv1alpha1.Validation),
+				ConditionReason(hwv1alpha1.Failed), metav1.ConditionFalse, errMessage)
+			if updateErr != nil {
+				// nolint: wrapcheck
+				return 0, updateErr
+			}
+			return 0, NewInputError("%s", errMessage)
+		}
+		return timeout, nil
+	}
+
+	return 0, nil
 }

@@ -9,11 +9,11 @@ const (
 
 // Base resource names
 const (
+	InventoryDatabase          = "postgres"
 	InventoryMetadata          = "metadata"
 	InventoryDeploymentManager = "deployment-manager"
 	InventoryResource          = "resource"
-	InventoryAlarmSubscription = "alarm-subscription"
-	InventoryAlarmNotification = "alarm-notification"
+	InventoryAlarms            = "alarms"
 )
 
 // Suffix for server names
@@ -21,11 +21,11 @@ const serverSuffix = "-server"
 
 // Deployment names
 const (
+	InventoryDatabaseServerName          = InventoryDatabase + serverSuffix
 	InventoryMetadataServerName          = InventoryMetadata + serverSuffix
 	InventoryDeploymentManagerServerName = InventoryDeploymentManager + serverSuffix
 	InventoryResourceServerName          = InventoryResource + serverSuffix
-	InventoryAlarmSubscriptionServerName = InventoryAlarmSubscription + serverSuffix
-	InventoryAlarmNotificationServerName = InventoryAlarmNotification + serverSuffix
+	InventoryAlarmServerName             = InventoryAlarms + serverSuffix
 )
 
 // InventoryIngressName the name of our Ingress controller instance
@@ -39,6 +39,11 @@ const (
 
 // Container arguments
 var (
+	AlarmServerArgs = []string{
+		"alarms-server",
+		"serve",
+		"--api-listener-address=127.0.0.1:8000",
+	}
 	MetadataServerArgs = []string{
 		"start",
 		"metadata-server",
@@ -62,18 +67,37 @@ var (
 	}
 )
 
+// DefaultOCloudID defines the default Global O-Cloud ID to be used until the end user configures this value.
+const DefaultOCloudID = "undefined"
+
+// DefaultAppName defines the name prepended to the ingress host to form our FQDN hostname.
+const DefaultAppName = "o2ims"
+
+// Defines information related to the operator instance in a namespace
+const (
+	DefaultInventoryCR      = "default"
+	DefaultNamespace        = "oran-o2ims"
+	DefaultNamespaceEnvName = "OCLOUD_MANAGER_NAMESPACE"
+)
+
+// Search API attributes
+const (
+	SearchApiLabelKey   = "search-monitor"
+	SearchApiLabelValue = "search-api"
+)
+
 // Default values for backend URL and token:
 const (
-	defaultBackendURL       = "https://kubernetes.default.svc"
-	defaultBackendTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"          // nolint: gosec // hardcoded path only
+	defaultApiServerURL     = "https://kubernetes.default.svc"
+	DefaultBackendTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"          // nolint: gosec // hardcoded path only
 	defaultBackendCABundle  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"         // nolint: gosec // hardcoded path only
-	defaultServiceCAFile    = "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt" // nolint: gosec // hardcoded path only
+	DefaultServiceCAFile    = "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt" // nolint: gosec // hardcoded path only
 )
 
 // Default timeout values
 const (
 	DefaultHardwareProvisioningTimeout = 90 * time.Minute
-	DefaultClusterProvisioningTimeout  = 90 * time.Minute
+	DefaultClusterInstallationTimeout  = 90 * time.Minute
 	DefaultClusterConfigurationTimeout = 30 * time.Minute
 )
 
@@ -82,7 +106,7 @@ const (
 // If not specified, the default timeout values will be applied.
 const (
 	HardwareProvisioningTimeoutConfigKey = "hardwareProvisioningTimeout"
-	ClusterProvisioningTimeoutConfigKey  = "clusterProvisioningTimeout"
+	ClusterInstallationTimeoutConfigKey  = "clusterInstallationTimeout"
 	ClusterConfigurationTimeoutConfigKey = "clusterConfigurationTimeout"
 )
 
@@ -121,6 +145,8 @@ var (
 		{"nodes", "*", "bmcCredentialsName"},
 		{"nodes", "*", "bootMACAddress"},
 		{"nodes", "*", "nodeNetwork", "interfaces", "*", "macAddress"},
+		// modified for upgrade
+		{"suppressedManifests"},
 	}
 )
 
@@ -141,6 +167,7 @@ const (
 	HwTemplatePluginMgr      = "hwMgrId"
 	HwTemplateNodePool       = "node-pools-data"
 	HwTemplateBootIfaceLabel = "bootInterfaceLabel"
+	HwTemplateExtensions     = "extensions"
 )
 
 const (
@@ -164,24 +191,63 @@ const (
 
 // Hardware Manager plugin constants
 const (
-	UnitTestHwmgrID         = "hwmgr"
-	UnitTestHwmgrNamespace  = "hwmgr"
-	TempDellPluginNamespace = "dell-hwmgr"
-	DefaultPluginNamespace  = "oran-hwmgr-plugin"
+	UnitTestHwmgrID        = "hwmgr"
+	UnitTestHwmgrNamespace = "hwmgr"
+	DefaultPluginNamespace = "oran-hwmgr-plugin"
 )
 
 // POD Container Names
 const (
-	ServerContainerName = "server"
-	RbacContainerName   = "rbac"
+	MigrationContainerName = "migration"
+	RbacContainerName      = "rbac"
+	ServerContainerName    = "server"
+)
+
+// POD Port Values
+const (
+	DefaultServicePort   = 8000
+	DefaultTargetPort    = "https"
+	DefaultContainerPort = 8000
+
+	DatabaseServicePort = 5432
+	DatabaseTargetPort  = "database"
 )
 
 // Environment values
 const (
 	ServerImageName        = "IMAGE"
 	KubeRbacProxyImageName = "KUBE_RBAC_PROXY_IMAGE"
+	PostgresImageName      = "POSTGRES_IMAGE"
 	HwMgrPluginNameSpace   = "HWMGR_PLUGIN_NAMESPACE"
 )
 
 // ClusterVersionName is the name given to the default ClusterVersion object
 const ClusterVersionName = "version"
+
+// Upgrade constants
+const (
+	UpgradeDefaultsConfigmapKey = "ibgu"
+)
+
+// CRDs needed to be suppressed in ClusterInstance for upgrade
+var (
+	CRDsToBeSuppressedForUpgrade = []string{
+		"AgentClusterInstall",
+	}
+)
+
+// Postgres values
+const (
+	AdminPasswordEnvName     = "POSTGRESQL_ADMIN_PASSWORD"     // nolint: gosec
+	AlarmsPasswordEnvName    = "ORAN_O2IMS_ALARMS_PASSWORD"    // nolint: gosec
+	ResourcesPasswordEnvName = "ORAN_O2IMS_RESOURCES_PASSWORD" // nolint: gosec
+
+	DatabaseHostnameEnvVar = "POSTGRES_HOSTNAME"
+)
+
+// Alertmanager values
+const (
+	AlertmanagerObjectName = "alertmanager"
+	AlertmanagerNamespace  = "open-cluster-management-observability"
+	AlertmanagerSA         = "alertmanager"
+)

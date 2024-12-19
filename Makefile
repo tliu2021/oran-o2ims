@@ -22,6 +22,11 @@ ginkgo_flags:=
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
 VERSION ?= 4.16.0
 
+# Development/Debug passwords for database.  This requires that the operator be deployed in DEBUG=yes mode or for the
+# developer to override these values with the current passwords
+ORAN_O2IMS_ALARMS_PASSWORD ?= debug
+ORAN_O2IMS_RESOURCES_PASSWORD ?= debug
+
 ifeq (${DEBUG}, yes)
 	DOCKER_TARGET = debug
 	GOBUILD_GCFLAGS = all=-N -l
@@ -47,7 +52,8 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
 # openshift.io/oran-o2ims-bundle:$VERSION and openshift.io/oran-o2ims-catalog:$VERSION.
-IMAGE_TAG_BASE ?= quay.io/openshift-kni/oran-o2ims-operator
+IMAGE_NAME ?= oran-o2ims-operator
+IMAGE_TAG_BASE ?= quay.io/openshift-kni/${IMAGE_NAME}
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -74,7 +80,7 @@ IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.28.0
 
-# OPCLOUD_MANAGER_NAMESPACE refers to the namespace of the O-Cloud Manager
+# OCLOUD_MANAGER_NAMESPACE refers to the namespace of the O-Cloud Manager
 OCLOUD_MANAGER_NAMESPACE ?= oran-o2ims
 
 # HWMGR_PLUGIN_NAMESPACE refers to the namespace of the hardware manager plugin.
@@ -139,7 +145,7 @@ build: manifests generate fmt vet ## Build manager binary.
 
 .PHONY: run
 run: manifests generate fmt vet binary ## Run a controller from your host.
-	IMAGE=$(IMAGE_TAG_BASE):$(VERSION) ./oran-o2ims start controller-manager
+	IMAGE=$(IMAGE_TAG_BASE):$(VERSION) $(LOCALBIN)/$(BINARY_NAME) start controller-manager
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -184,7 +190,7 @@ uninstall: manifests kustomize kubectl ## Uninstall CRDs from the K8s cluster sp
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: deploy
-deploy: manifests kustomize kubectl ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: install manifests kustomize kubectl ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	@$(KUBECTL) create configmap env-config --from-literal=HWMGR_PLUGIN_NAMESPACE=$(HWMGR_PLUGIN_NAMESPACE) --dry-run=client -o yaml > config/manager/env-config.yaml
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/$(KUSTOMIZE_OVERLAY) | $(KUBECTL) apply -f -
@@ -194,6 +200,9 @@ undeploy: kustomize kubectl ## Undeploy controller from the K8s cluster specifie
 	$(KUSTOMIZE) build config/$(KUSTOMIZE_OVERLAY) | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Build Dependencies
+
+## oran-binary
+BINARY_NAME := oran-o2ims
 
 ## Location to install dependencies to
 LOCALBIN ?= $(shell pwd)/bin
@@ -334,12 +343,20 @@ catalog-push: ## Push a catalog image.
 
 ##@ Binary
 .PHONY: binary
-binary:
-	go build -mod=vendor
+binary: $(LOCALBIN)
+	go build -o $(LOCALBIN)/$(BINARY_NAME) -mod=vendor
+
 
 .PHONY: generate
 go-generate:
 	go generate ./...
+	@for file in *.gen*; do \
+		if ! git diff --exit-code -- $$file; then \
+			echo "Error: $$file is stale. Please commit the updated file."; \
+			exit 1; \
+		fi \
+	done
+	@echo "All generated files are up-to-date."
 
 .PHONY: test tests
 test tests:
@@ -377,13 +394,11 @@ deps-update:
 	hack/install_test_deps.sh
 
 .PHONY: ci-job
-ci-job: deps-update generate fmt vet lint shellcheck bashate fmt test bundle-check
+ci-job: deps-update go-generate generate fmt vet lint shellcheck bashate fmt test bundle-check
 
 .PHONY: clean
 clean:
-	rm -rf \
-	oran-o2ims \
-	$(NULL)
+	-rm $(LOCALBIN)/$(BINARY_NAME)
 
 .PHONY: scorecard-test
 scorecard-test: operator-sdk
@@ -395,3 +410,59 @@ scorecard-test: operator-sdk
 sync-submodules:
 	@echo "Syncing submodules"
 	hack/sync-submodules.sh
+
+# markdownlint rules, following: https://github.com/openshift/enhancements/blob/master/Makefile
+.PHONY: markdownlint-image
+markdownlint-image:  ## Build local container markdownlint-image
+	$(CONTAINER_TOOL) image build -f ./hack/Dockerfile.markdownlint --tag $(IMAGE_NAME)-markdownlint:latest ./hack
+
+.PHONY: markdownlint-image-clean
+markdownlint-image-clean:  ## Remove locally cached markdownlint-image
+	$(CONTAINER_TOOL) image rm $(IMAGE_NAME)-markdownlint:latest
+
+markdownlint: markdownlint-image  ## run the markdown linter
+	$(CONTAINER_TOOL) run \
+		--rm=true \
+		--env RUN_LOCAL=true \
+		--env VALIDATE_MARKDOWN=true \
+		--env PULL_BASE_SHA=$(PULL_BASE_SHA) \
+		-v $$(pwd):/workdir:Z \
+		$(IMAGE_NAME)-markdownlint:latest
+
+##@ O-RAN Alarms Server
+
+.PHNOY: alarms
+alarms: ##Run full alarms stack
+	IMG=$(IMAGE_TAG_BASE):latest make bundle deploy clean-am-service connect-postgres connect-resource-server run-alarms-migrate create-am-service run-alarms
+
+create-am-service: ##Creates alarm manager service and endpoint to expose a DNS entry.
+	oc apply -k ./internal/service/alarms/k8s/base --wait=true
+	@echo "Service and Endpoint for alarm manager created."
+
+clean-am-service: ##Deletes alarm manager service and endpoint.
+	-oc delete -k ./internal/service/alarms/k8s/base --wait=true --ignore-not-found=true
+	@echo "Service and Endpoint for alarm manager deleted."
+
+.PHONY: run-alarms
+run-alarms: go-generate binary ##Run alarms server locally
+	@oc exec -n $(OCLOUD_MANAGER_NAMESPACE) $(shell oc get pods -n $(OCLOUD_MANAGER_NAMESPACE) -l app=alarms-server -o=jsonpath='{.items[0].metadata.name}') -- cat /var/run/secrets/kubernetes.io/serviceaccount/token > /tmp/token
+	TOKEN_PATH=/tmp/token RESOURCE_SERVER_URL="https://localhost:8001" INSECURE_SKIP_VERIFY=true POSTGRES_HOSTNAME=localhost ORAN_O2IMS_ALARMS_PASSWORD=$(ORAN_O2IMS_ALARMS_PASSWORD) $(LOCALBIN)/$(BINARY_NAME) alarms-server serve
+
+run-alarms-migrate: binary ##Migrate all the way up
+	DEBUG=yes POSTGRES_HOSTNAME=localhost INSECURE_SKIP_VERIFY=true ORAN_O2IMS_ALARMS_PASSWORD=$(ORAN_O2IMS_ALARMS_PASSWORD) $(LOCALBIN)/$(BINARY_NAME) alarms-server migrate
+
+run-resources-migrate: binary ##Migrate all the way up
+	ORAN_O2IMS_RESOURCES_PASSWORD=$(ORAN_O2IMS_RESOURCES_PASSWORD) $(LOCALBIN)/$(BINARY_NAME) resource-server migrate
+
+##@ O-RAN Postgres DB
+
+.PHONY: connect-postgres
+connect-postgres: ##Connect to O-RAN postgres
+	oc wait --for=condition=Ready pod -l app=postgres-server -n oran-o2ims --timeout=30s
+	@echo "Starting port-forward in background on port 5432:5432 to postgres-server in namespace oran-o2ims"
+	nohup oc port-forward --address localhost svc/postgres-server 5432:5432 -n oran-o2ims > pgproxy.log 2>&1 &
+
+.PHONY: connect-resource-server
+connect-resource-server: ##Connect to resource server svc
+	@echo "Starting port-forward in background on port 8001:8000 to resource server svc in namespace oran-o2ims"
+	nohup oc port-forward --address localhost svc/resource-server 8001:8000 -n oran-o2ims > pgproxy_resource.log 2>&1 &

@@ -48,12 +48,12 @@ func AlarmSubscriptionServer() *cobra.Command {
 	network.AddListenerFlags(flags, network.APIListener, network.APIAddress)
 	network.AddListenerFlags(flags, network.MetricsListener, network.MetricsAddress)
 	_ = flags.String(
-		cloudIDFlagName,
+		GlobalCloudIDFlagName,
 		"",
-		"O-Cloud identifier.",
+		"Global O-Cloud identifier.",
 	)
 	_ = flags.StringArray(
-		extensionsFlagName,
+		ExtensionsFlagName,
 		[]string{},
 		"Extension to add to alarm subscriptions.",
 	)
@@ -106,37 +106,37 @@ func (c *AlarmSubscriptionServerCommand) run(cmd *cobra.Command, argv []string) 
 	}
 
 	// Get the cloud identifier:
-	cloudID, err := flags.GetString(cloudIDFlagName)
+	globalCloudID, err := flags.GetString(GlobalCloudIDFlagName)
 	if err != nil {
 		logger.ErrorContext(
 			ctx,
-			"Failed to get cloud identifier flag",
-			"flag", cloudIDFlagName,
+			"Failed to get global cloud identifier flag",
+			"flag", GlobalCloudIDFlagName,
 			"error", err.Error(),
 		)
 		return exit.Error(1)
 	}
-	if cloudID == "" {
+	if globalCloudID == "" {
 		logger.ErrorContext(
 			ctx,
-			"Cloud identifier is empty",
-			"flag", cloudIDFlagName,
+			"Global cloud identifier is empty",
+			"flag", GlobalCloudIDFlagName,
 		)
 		return exit.Error(1)
 	}
 	logger.InfoContext(
 		ctx,
-		"Cloud identifier",
-		"value", cloudID,
+		"Global cloud identifier",
+		"value", globalCloudID,
 	)
 
 	// Get the extensions details:
-	extensions, err := flags.GetStringArray(extensionsFlagName)
+	extensions, err := flags.GetStringArray(ExtensionsFlagName)
 	if err != nil {
 		logger.ErrorContext(
 			ctx,
 			"Failed to extension flag",
-			"flag", extensionsFlagName,
+			"flag", ExtensionsFlagName,
 			"error", err.Error(),
 		)
 		return exit.Error(1)
@@ -232,7 +232,7 @@ func (c *AlarmSubscriptionServerCommand) run(cmd *cobra.Command, argv []string) 
 	handler, err := service.NewSubscriptionHandler().
 		SetLogger(logger).
 		SetLoggingWrapper(loggingWrapper).
-		SetCloudID(cloudID).
+		SetGlobalCloudID(globalCloudID).
 		SetExtensions(extensions...).
 		SetKubeClient(kubeClient).
 		SetSubscriptionIdString(service.SubscriptionIdAlarm).

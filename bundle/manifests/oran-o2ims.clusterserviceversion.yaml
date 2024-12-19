@@ -6,6 +6,39 @@ metadata:
       [
         {
           "apiVersion": "o2ims-hardwaremanagement.oran.openshift.io/v1alpha1",
+          "kind": "HardwareTemplate",
+          "metadata": {
+            "name": "sample-hwtemplate-v1",
+            "namespace": "oran-o2ims"
+          },
+          "spec": {
+            "bootInterfaceLabel": "bootable-interface",
+            "extensions": {
+              "resourceTypeId": "ResourceGroup~2.1.1"
+            },
+            "hardwareProvisioningTimeout": "60m",
+            "hwMgrId": "hwmgr-1",
+            "nodePoolData": [
+              {
+                "hwProfile": "profile-spr-single-processor-64G",
+                "name": "controller",
+                "resourcePoolID": "master-pool",
+                "role": "master"
+              },
+              {
+                "hwProfile": "profile-spr-dual-processor-128G",
+                "name": "worker",
+                "resourcePoolID": "worker-pool",
+                "role": "worker"
+              }
+            ]
+          },
+          "status": {
+            "conditions": []
+          }
+        },
+        {
+          "apiVersion": "o2ims-hardwaremanagement.oran.openshift.io/v1alpha1",
           "kind": "Node",
           "metadata": {
             "labels": {
@@ -72,28 +105,31 @@ metadata:
           },
           "spec": {
             "cloudID": "sample",
+            "extensions": [],
             "hwMgrId": "loopback-1",
             "nodeGroup": [
               {
-                "hwProfile": "sample-master-profile",
-                "interfaces": [
-                  "eno1"
-                ],
-                "name": "master",
+                "nodePoolData": {
+                  "hwProfile": "sample-master-profile",
+                  "name": "controller",
+                  "resourcePoolId": "master-pool",
+                  "role": "master"
+                },
                 "size": 1
               },
               {
-                "hwProfile": "sample-worker-profile",
-                "name": "worker",
+                "nodePoolData": {
+                  "hwProfile": "sample-worker-profile",
+                  "name": "worker",
+                  "resourcePoolId": "worker-pool",
+                  "role": "worker"
+                },
                 "size": 0
               }
             ],
             "site": "ottawa"
           },
           "status": {
-            "cloudManager": {
-              "observedGeneration": 1
-            },
             "conditions": [
               {
                 "lastTransitionTime": "2024-10-09T15:36:41Z",
@@ -122,19 +158,30 @@ metadata:
               "app.kubernetes.io/name": "inventory",
               "app.kubernetes.io/part-of": "oran-o2ims"
             },
-            "name": "sample",
+            "name": "default",
             "namespace": "oran-o2ims"
           },
           "spec": {
-            "cloudId": "f7fd171f-57b5-4a17-b176-9a73bf6064a4",
-            "ingressHost": "o2ims.apps.global-hub.karmalabs.corp",
-            "resourceServerConfig": {
-              "enabled": false
+            "caBundleName": "o2ims-custom-ca-certs",
+            "cloudID": "b7dcb3ff-583d-42d9-abb5-f484386fc688",
+            "smo": {
+              "oauth": {
+                "clientSecretName": "oauth-client-secrets",
+                "scopes": [
+                  "openid",
+                  "profile",
+                  "roles",
+                  "smo-audience"
+                ],
+                "tokenEndpoint": "/protocol/openid-connect/token",
+                "url": "https://oauth.example.com:8443/realms/oran"
+              },
+              "registrationEndpoint": "/smo/v1/registration",
+              "tls": {
+                "clientCertificateName": "o2ims-client-tls-certificate"
+              },
+              "url": "https://smo.example.com"
             }
-          },
-          "status": {
-            "deploymentStatus": {},
-            "usedServerConfig": {}
           }
         },
         {
@@ -142,7 +189,7 @@ metadata:
           "kind": "ClusterTemplate",
           "metadata": {
             "name": "clustertemplate-sample.v1.0.0",
-            "namespace": "clustertemplate-a-v4-16"
+            "namespace": "clustertemplate-a-v4-16-3"
           },
           "spec": {
             "characteristics": {
@@ -153,10 +200,11 @@ metadata:
               "apple": "23"
             },
             "name": "clustertemplate-a",
+            "release": "4.16.3",
             "templateParameterSchema": {
               "properties": {
                 "clusterInstanceParameters": {
-                  "description": "clusterInstanceParameters defines the available parameters for cluster provisioning",
+                  "description": "clusterInstanceParameters defines the available parameters for cluster installation",
                   "properties": {
                     "additionalNTPSources": {
                       "description": "AdditionalNTPSources is a list of NTP sources (hostname or IP) to be added to all cluster hosts. They are added to any NTP sources that were configured through other means.",
@@ -230,38 +278,6 @@ metadata:
                       "items": {
                         "description": "NodeSpec",
                         "properties": {
-                          "bmcAddress": {
-                            "description": "BmcAddress holds the URL for accessing the controller on the network.",
-                            "type": "string"
-                          },
-                          "bmcCredentialsDetails": {
-                            "description": "A workaround to provide bmc creds through ProvisioningRequest",
-                            "properties": {
-                              "password": {
-                                "type": "string"
-                              },
-                              "username": {
-                                "type": "string"
-                              }
-                            }
-                          },
-                          "bmcCredentialsName": {
-                            "description": "BmcCredentialsName is the name of the secret containing the BMC credentials (requires keys \"username\" and \"password\").",
-                            "properties": {
-                              "name": {
-                                "type": "string"
-                              }
-                            },
-                            "required": [
-                              "name"
-                            ],
-                            "type": "object"
-                          },
-                          "bootMACAddress": {
-                            "description": "Which MAC address will PXE boot? This is optional for some types, but required for libvirt VMs driven by vbmc.",
-                            "pattern": "[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}",
-                            "type": "string"
-                          },
                           "extraAnnotations": {
                             "additionalProperties": {
                               "additionalProperties": {
@@ -270,6 +286,16 @@ metadata:
                               "type": "object"
                             },
                             "description": "Additional node-level annotations to be applied to the rendered templates",
+                            "type": "object"
+                          },
+                          "extraLabels": {
+                            "additionalProperties": {
+                              "additionalProperties": {
+                                "type": "string"
+                              },
+                              "type": "object"
+                            },
+                            "description": "Additional node-level labels to be applied to the rendered templates",
                             "type": "object"
                           },
                           "hostName": {
@@ -290,75 +316,6 @@ metadata:
                                 "description": "yaml that can be processed by nmstate, using custom marshaling/unmarshaling that will allow to populate nmstate config as plain yaml.",
                                 "type": "object",
                                 "x-kubernetes-preserve-unknown-fields": true
-                              },
-                              "interfaces": {
-                                "description": "Interfaces is an array of interface objects containing the name and MAC address for interfaces that are referenced in the raw nmstate config YAML. Interfaces listed here will be automatically renamed in the nmstate config YAML to match the real device name that is observed to have the corresponding MAC address. At least one interface must be listed so that it can be used to identify the correct host, which is done by matching any MAC address in this list to any MAC address observed on the host.",
-                                "items": {
-                                  "properties": {
-                                    "macAddress": {
-                                      "description": "mac address present on the host.",
-                                      "pattern": "^([0-9A-Fa-f]{2}[:]){5}([0-9A-Fa-f]{2})$",
-                                      "type": "string"
-                                    },
-                                    "name": {
-                                      "description": "nic name used in the yaml, which relates 1:1 to the mac address. Name in REST API: logicalNICName",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "macAddress"
-                                  ],
-                                  "type": "object"
-                                },
-                                "minItems": 1,
-                                "type": "array"
-                              }
-                            },
-                            "type": "object"
-                          },
-                          "rootDeviceHints": {
-                            "description": "RootDeviceHints specifies the device for deployment. Identifiers that are stable across reboots are recommended, for example, wwn: \u003cdisk_wwn\u003e or deviceName: /dev/disk/by-path/\u003cdevice_path\u003e",
-                            "properties": {
-                              "deviceName": {
-                                "description": "A Linux device name like \"/dev/vda\", or a by-path link to it like \"/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0\". The hint must match the actual value exactly.",
-                                "type": "string"
-                              },
-                              "hctl": {
-                                "description": "A SCSI bus address like 0:0:0:0. The hint must match the actual value exactly.",
-                                "type": "string"
-                              },
-                              "minSizeGigabytes": {
-                                "description": "The minimum size of the device in Gigabytes.",
-                                "minimum": 0,
-                                "type": "integer"
-                              },
-                              "model": {
-                                "description": "A vendor-specific device identifier. The hint can be a substring of the actual value.",
-                                "type": "string"
-                              },
-                              "rotational": {
-                                "description": "True if the device should use spinning media, false otherwise.",
-                                "type": "boolean"
-                              },
-                              "serialNumber": {
-                                "description": "Device serial number. The hint must match the actual value exactly.",
-                                "type": "string"
-                              },
-                              "vendor": {
-                                "description": "The name of the vendor or manufacturer of the device. The hint can be a substring of the actual value.",
-                                "type": "string"
-                              },
-                              "wwn": {
-                                "description": "Unique storage identifier. The hint must match the actual value exactly.",
-                                "type": "string"
-                              },
-                              "wwnVendorExtension": {
-                                "description": "Unique vendor storage identifier. The hint must match the actual value exactly.",
-                                "type": "string"
-                              },
-                              "wwnWithExtension": {
-                                "description": "Unique storage identifier with the vendor extension appended. The hint must match the actual value exactly.",
-                                "type": "string"
                               }
                             },
                             "type": "object"
@@ -452,8 +409,9 @@ metadata:
             },
             "templates": {
               "clusterInstanceDefaults": "clustertemplate-sample.v1.0.0-clusterinstance-defaults",
-              "hwTemplate": "dell-intel-cu-template-configmap-v1",
-              "policyTemplateDefaults": "clustertemplate-sample.v1.0.0-policytemplate-defaults"
+              "hwTemplate": "sample-hwtemplate-v1",
+              "policyTemplateDefaults": "clustertemplate-sample.v1.0.0-policytemplate-defaults",
+              "upgradeDefaults": "upgrade-defaults-v1"
             },
             "version": "v1.0.0"
           },
@@ -513,11 +471,6 @@ metadata:
                 ],
                 "nodes": [
                   {
-                    "bmcAddress": "idrac-virtualmedia+https://10.16.231.87/redfish/v1/Systems/System.Embedded.1",
-                    "bmcCredentialsName": {
-                      "name": "node1-bmc-secret"
-                    },
-                    "bootMACAddress": "00:00:00:01:20:30",
                     "bootMode": "UEFI",
                     "extraAnnotations": {
                       "BareMetalHost": {
@@ -619,21 +572,7 @@ metadata:
                             }
                           ]
                         }
-                      },
-                      "interfaces": [
-                        {
-                          "macAddress": "00:00:00:01:20:30",
-                          "name": "eno1"
-                        },
-                        {
-                          "macAddress": "02:00:00:80:12:14",
-                          "name": "eth0"
-                        },
-                        {
-                          "macAddress": "02:00:00:80:12:15",
-                          "name": "eth1"
-                        }
-                      ]
+                      }
                     }
                   }
                 ],
@@ -718,6 +657,11 @@ spec:
         path: name
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
+      - description: Release defines the openshift release version of the template
+        displayName: Release
+        path: release
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
       - description: TemplateId defines a Identifier for the O-Cloud Template. This
           identifier is allocated by the O-Cloud.
         displayName: TemplateId
@@ -748,6 +692,42 @@ spec:
       - displayName: Conditions
         path: conditions
       version: v1alpha1
+    - description: HardwareTemplate is the Schema for the hardwaretemplates API
+      displayName: ORAN O2IMS Hardware Template
+      kind: HardwareTemplate
+      name: hardwaretemplates.o2ims-hardwaremanagement.oran.openshift.io
+      resources:
+      - kind: ConfigMap
+        name: ""
+        version: v1
+      specDescriptors:
+      - description: BootInterfaceLabel is the label of the boot interface.
+        displayName: Boot Interface Label
+        path: bootInterfaceLabel
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: Extensions holds additional custom key-value pairs that can be
+          used to extend the node pool's configuration.
+        displayName: Extensions
+        path: extensions
+      - description: HardwareProvisioningTimeout defines the timeout duration string
+          for the hardware provisioning.
+        displayName: Hardware Provisioning Timeout
+        path: hardwareProvisioningTimeout
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: HwMgrId is the identifier for the hardware manager plugin adaptor.
+        displayName: Hardware Manager ID
+        path: hwMgrId
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: NodePoolData defines a collection of NodePoolData items
+        displayName: Node Pool Data
+        path: nodePoolData
+      statusDescriptors:
+      - displayName: Conditions
+        path: conditions
+      version: v1alpha1
     - description: Inventory is the Schema for the Inventory API
       displayName: ORAN O2IMS Inventory
       kind: Inventory
@@ -757,10 +737,9 @@ spec:
         name: ""
         version: apps/v1
       specDescriptors:
-      - description: AlarmSubscriptionServerConfig contains the configuration for
-          the alarm server.
-        displayName: Alarm Subscription Server Configuration
-        path: alarmSubscriptionServerConfig
+      - description: AlarmServerConfig contains the configuration for the alarm server.
+        displayName: Alarm Server Configuration
+        path: alarmServerConfig
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       - description: |-
@@ -771,10 +750,10 @@ spec:
         path: caBundleName
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
-      - description: CloudId is used to correlate the SMO inventory record with the
-          deployed cloud instance.
-        displayName: Cloud Id
-        path: cloudId
+      - description: CloudID is the global cloud ID value used to correlate the SMO
+          inventory record with the deployed cloud instance.
+        displayName: Cloud ID
+        path: cloudID
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       - displayName: Deployment Manager Server Configuration
@@ -860,25 +839,47 @@ spec:
         path: smo.registrationEndpoint
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
+      - description: TlsConfig defines the TLS attributes specific to the SMO and
+          OAuth servers
+        displayName: TLS Configuration
+        path: smo.tls
+      - description: |-
+          ClientCertificateName represents the name of a secret (in the current namespace) which contains an X.509
+          certificate and private key to be used when initiating connections to the SMO and OAuth servers.  The secret is
+          expected to contain a 'tls.key' and 'tls.crt' keys.  If the client is signed by intermediate CA certificate(s)
+          then it is expected that the full chain is to be appended to the certificate file with the device certificate
+          being first and the root CA being last.
+        displayName: TLS client certificate
+        path: smo.tls.clientCertificateName
       - description: Url represents the base URL of the SMO instance
         displayName: SMO URL
         path: smo.url
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       statusDescriptors:
+      - description: Stores the local cluster ID used as the local Cloud ID value.
+        displayName: Local Cluster ID
+        path: clusterID
       - description: |-
           INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
           Important: Run "make" to regenerate code after modifying this file
-        displayName: Deployments Status
+        displayName: Conditions
+        path: conditions
+      - displayName: Deployments Status
         path: deploymentStatus
-      - displayName: Conditions
-        path: deploymentStatus.conditions
+      - displayName: Alarm Server Status
+        path: deploymentStatus.alarmServerStatus
       - displayName: Deployment Server Status
         path: deploymentStatus.deploymentServerStatus
       - displayName: Metadata Server Status
         path: deploymentStatus.metadataServerStatus
       - displayName: Resource Server Status
         path: deploymentStatus.resourceServerStatus
+      - description: |-
+          Stores the ingress host domain resolved at runtime; either from a user override or automatically computed from
+          the default ingress controller.
+        displayName: Resolved Ingress Host Address
+        path: ingressHost
       - displayName: Deployments Status
         path: usedServerConfig
       version: v1alpha1
@@ -899,7 +900,9 @@ spec:
         path: cloudID
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
-      - description: HwMgrId is the identifier for the hardware manager plugin adaptor.
+      - displayName: Extensions
+        path: extensions
+      - description: HwMgrId is the identifier for the hardware manager plugin instance.
         displayName: Hardware Manager ID
         path: hwMgrId
         x-descriptors:
@@ -917,11 +920,8 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       statusDescriptors:
-      - displayName: Cloud Manager
-        path: cloudManager
-      - description: |-
-          Conditions represent the observations of the NodePool's current state.
-          Possible values of the condition type are `Provisioned` and `Unknown`.
+      - description: Conditions represent the latest available observations of an
+          NodePool's state.
         displayName: Conditions
         path: conditions
       - displayName: Hw Mgr Plugin
@@ -939,9 +939,21 @@ spec:
         name: ""
         version: v1
       specDescriptors:
+      - displayName: Extensions
+        path: extensions
       - description: GroupName
         displayName: Group Name
         path: groupName
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: HwMgrId is the identifier for the hardware manager instance.
+        displayName: Hardware Manager ID
+        path: hwMgrId
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:text
+      - description: HwMgrNodeId is the node identifier from the hardware manager.
+        displayName: Hardware Manager Node ID
+        path: hwMgrNodeId
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       - description: HwProfile
@@ -964,6 +976,8 @@ spec:
         path: conditions
       - displayName: Hostname
         path: hostname
+      - displayName: Hw Profile
+        path: hwProfile
       - displayName: Interfaces
         path: interfaces
       version: v1alpha1
@@ -1019,18 +1033,8 @@ spec:
         x-descriptors:
         - urn:alm:descriptor:com.tectonic.ui:text
       statusDescriptors:
-      - description: ClusterDetails references to the ClusterInstance.
-        displayName: Cluster Details
-        path: clusterDetails
       - displayName: Conditions
         path: conditions
-      - description: NodePoolRef references to the NodePool.
-        displayName: Node Pool Ref
-        path: nodePoolRef
-      - description: Holds policies that are matched with the ManagedCluster created
-          by the ProvisioningRequest.
-        displayName: Policies
-        path: policies
       version: v1alpha1
   description: |
     # O-RAN O2IMS operator
@@ -1046,6 +1050,16 @@ spec:
     spec:
       clusterPermissions:
       - rules:
+        - nonResourceURLs:
+          - /internal/v1/caas-alerts/alertmanager
+          verbs:
+          - create
+          - post
+        - nonResourceURLs:
+          - /o2ims-infrastructureInventory/v1/resourceTypes
+          verbs:
+          - get
+          - list
         - apiGroups:
           - ""
           resources:
@@ -1163,6 +1177,32 @@ spec:
           - list
           - watch
         - apiGroups:
+          - lcm.openshift.io
+          resources:
+          - imagebasedgroupupgrades
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - lcm.openshift.io
+          resources:
+          - imagebasedgroupupgrades/status
+          verbs:
+          - get
+        - apiGroups:
+          - monitoring.coreos.com
+          resources:
+          - prometheusrules
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
           - networking.k8s.io
           resources:
           - ingresses
@@ -1174,6 +1214,26 @@ spec:
           - patch
           - update
           - watch
+        - apiGroups:
+          - o2ims-hardwaremanagement.oran.openshift.io
+          resources:
+          - hardwaretemplates
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - o2ims-hardwaremanagement.oran.openshift.io
+          resources:
+          - hardwaretemplates/status
+          verbs:
+          - get
+          - patch
+          - update
         - apiGroups:
           - o2ims-hardwaremanagement.oran.openshift.io
           resources:
@@ -1293,6 +1353,14 @@ spec:
           - patch
           - update
         - apiGroups:
+          - operator.openshift.io
+          resources:
+          - ingresscontrollers
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
           - policy.open-cluster-management.io
           resources:
           - policies
@@ -1336,6 +1404,12 @@ spec:
           - update
           - watch
         - apiGroups:
+          - view.open-cluster-management.io
+          resources:
+          - managedclusterviews
+          verbs:
+          - create
+        - apiGroups:
           - authentication.k8s.io
           resources:
           - tokenreviews
@@ -1377,7 +1451,7 @@ spec:
                 - --upstream=http://127.0.0.1:8080/
                 - --logtostderr=true
                 - --v=0
-                image: gcr.io/kubebuilder/kube-rbac-proxy:v0.15.0
+                image: quay.io/openshift/origin-kube-rbac-proxy:4.18
                 name: kube-rbac-proxy
                 ports:
                 - containerPort: 8443
@@ -1406,9 +1480,15 @@ spec:
                 - name: IMAGE
                   value: quay.io/openshift-kni/oran-o2ims-operator:4.16.0
                 - name: KUBE_RBAC_PROXY_IMAGE
-                  value: gcr.io/kubebuilder/kube-rbac-proxy:v0.15.0
+                  value: quay.io/openshift/origin-kube-rbac-proxy:4.18
+                - name: POSTGRES_IMAGE
+                  value: registry.redhat.io/rhel9/postgresql-16:9.5-1731610873
                 - name: HWMGR_PLUGIN_NAMESPACE
                   value: oran-hwmgr-plugin
+                - name: OCLOUD_MANAGER_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
                 image: quay.io/openshift-kni/oran-o2ims-operator:4.16.0
                 livenessProbe:
                   httpGet:

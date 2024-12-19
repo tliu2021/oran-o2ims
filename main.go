@@ -20,6 +20,9 @@ import (
 	"fmt"
 	"os"
 
+	alarmscmd "github.com/openshift-kni/oran-o2ims/internal/service/alarms/cmd"
+	inventorycmd "github.com/openshift-kni/oran-o2ims/internal/service/resources/cmd"
+
 	"github.com/openshift-kni/oran-o2ims/internal"
 	"github.com/openshift-kni/oran-o2ims/internal/cmd"
 	"github.com/openshift-kni/oran-o2ims/internal/exit"
@@ -37,6 +40,8 @@ func main() {
 		SetErr(os.Stderr).
 		AddCommand(cmd.Start).
 		AddCommand(cmd.Version).
+		AddCommand(alarmscmd.GetAlarmRootCmd).        // TODO: all server should have same root to share init info
+		AddCommand(inventorycmd.GetResourcesRootCmd). // TODO: all server should have same root to share init info
 		Build()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())

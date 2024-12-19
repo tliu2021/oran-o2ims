@@ -4,6 +4,16 @@ kind: ClusterRole
 metadata:
   name: manager-role
 rules:
+- nonResourceURLs:
+  - /internal/v1/caas-alerts/alertmanager
+  verbs:
+  - create
+  - post
+- nonResourceURLs:
+  - /o2ims-infrastructureInventory/v1/resourceTypes
+  verbs:
+  - get
+  - list
 - apiGroups:
   - ""
   resources:
@@ -121,6 +131,32 @@ rules:
   - list
   - watch
 - apiGroups:
+  - lcm.openshift.io
+  resources:
+  - imagebasedgroupupgrades
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - lcm.openshift.io
+  resources:
+  - imagebasedgroupupgrades/status
+  verbs:
+  - get
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - prometheusrules
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.k8s.io
   resources:
   - ingresses
@@ -132,6 +168,26 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - o2ims-hardwaremanagement.oran.openshift.io
+  resources:
+  - hardwaretemplates
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - o2ims-hardwaremanagement.oran.openshift.io
+  resources:
+  - hardwaretemplates/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - o2ims-hardwaremanagement.oran.openshift.io
   resources:
@@ -251,6 +307,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - operator.openshift.io
+  resources:
+  - ingresscontrollers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - policy.open-cluster-management.io
   resources:
   - policies
@@ -293,3 +357,9 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - view.open-cluster-management.io
+  resources:
+  - managedclusterviews
+  verbs:
+  - create
